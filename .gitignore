@@ -1,0 +1,27 @@
+# Secrets — never commit real values. Only .env.example is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# Go
+/apps/api/bin/
+/apps/api/api
+
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local agent/tooling state
+.multica/
+.pi/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

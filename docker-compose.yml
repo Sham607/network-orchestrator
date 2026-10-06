@@ -1,0 +1,53 @@
+# Dev stack: API + Postgres 16.
+#
+#   cp .env.example .env   # then fill in secrets locally
+#   docker compose up --build
+#
+# UniFi credentials are injected as runtime environment variables from `.env`;
+# they never appear in the image. In production the SPA is served by Caddy on
+# the same origin (docs/adr/002-tech-stack.md §5); the prod overlay lands with
+# the deployment work.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orchestrator}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orchestrator}
+      POSTGRES_DB: ${POSTGRES_DB:-orchestrator}
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orchestrator} -d ${POSTGRES_DB:-orchestrator}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      # Build context is the repo root: the Go module lives there.
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # Inside the compose network the database host is `db`.
+      DATABASE_URL: postgres://${POSTGRES_USER:-orchestrator}:${POSTGRES_PASSWORD:-orchestrator}@db:5432/${POSTGRES_DB:-orchestrator}?sslmode=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/api", "--healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  db_data:

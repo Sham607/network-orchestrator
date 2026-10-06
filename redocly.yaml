@@ -1,0 +1,8 @@
+# Redocly lint configuration.
+# `make openapi` / the CI `openapi` job validate openapi/openapi.yaml.
+extends:
+  - recommended
+rules:
+  # Probes are intentionally simple; 4xx responses will be added as the resource
+  # endpoints land in ZENI-6.
+  operation-4xx-response: off

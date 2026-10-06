@@ -1,0 +1,10 @@
+.git
+.gitignore
+.multica
+.pi
+.env
+.env.*
+node_modules
+dist
+**/dist
+**/*.tsbuildinfo
