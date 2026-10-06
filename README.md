@@ -99,13 +99,24 @@ enforced by `scripts/check-imports.sh` in CI, not by convention.
 
 ## API surface
 
-Phase 1 exposes probes today; resources follow in ZENI-6.
+`openapi/openapi.yaml` is the phase-1 contract: probes, operator auth, and the
+cache-backed `sites` / `devices` / `clients` / `networks` list and detail
+endpoints, plus two **gated** write operations that are disabled until the UniFi
+write scope is approved. Resource handlers land in follow-up work; the contract
+and its mock expectations are complete today so the dashboard can be built in
+parallel (`openapi/mock-expectations.md`).
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. |
-| `GET /api/v1/ready` | Readiness. 503 when the database is unreachable. |
+| `GET /api/v1/ready` | Readiness. 503 when the database is unreachable or the cache is stale. |
 | `GET /api/v1/sync/status` | Cache freshness for operators. |
+| `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. |
+| `GET /api/v1/sites` · `/sites/{id}` | Sites. |
+| `GET /api/v1/devices` · `/devices/{id}` | APs, switches, gateways (filter by site/status/type/mac). |
+| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. |
+| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). |
+| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. |
 
 Every error uses one shape: `{ "code", "message", "details" }`, where `code` is
 stable and machine-readable. See `openapi/openapi.yaml`.

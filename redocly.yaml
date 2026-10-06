@@ -3,6 +3,10 @@
 extends:
   - recommended
 rules:
-  # Probes are intentionally simple; 4xx responses will be added as the resource
-  # endpoints land in ZENI-6.
+  # Probes are intentionally simple and have no 4xx branch; resource endpoints
+  # publish 400/401/404/429/5xx as of the ZENI-6 contract.
   operation-4xx-response: off
+  # The localhost server entry is the documented dev target (docker compose).
+  # Production is the same-origin relative server, so this is not a real
+  # "example.com" placeholder.
+  no-server-example.com: off

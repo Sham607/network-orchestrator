@@ -1,28 +1,81 @@
 openapi: 3.1.0
 info:
   title: Network Orchestrator API
-  version: 0.1.0
+  version: 0.2.0
+  license:
+    name: Proprietary — internal use only
+    identifier: LicenseRef-Proprietary
   description: |
     Internal REST API of the Network Orchestrator control plane (backend ↔ dashboard).
 
-    This bootstrap document defines the health/readiness surface and the shared
-    error model. The full phase-1 resource contract (sites, devices, clients,
-    networks, sync status) is owned by ZENI-6 and extends this file.
+    **Contract-first.** This document is the single source of truth for the
+    backend ↔ dashboard boundary. Backend handlers and the TypeScript client are
+    both generated/checked against it, so a shape change here is a contract
+    change (docs/adr/003-architecture.md §5).
 
-    Conventions fixed here (docs/adr/003-architecture.md §5):
-      - All paths live under /api/v1 and are same-origin behind Caddy.
-      - Every error response uses the single `Error` schema with a stable,
-        machine-readable `code`.
-      - Cache-backed resources carry `synced_at`; the dashboard must never
-        assume the data is fresh.
+    Conventions fixed here:
+
+    - Every path lives under `/api/v1`, same-origin behind Caddy.
+    - Auth is a **server-side operator session cookie** + RBAC
+      (`viewer` < `operator` < `admin`); see `docs/adr/002-tech-stack.md` §6.
+      The UniFi API key never reaches the browser.
+    - Every error response uses the single `Error` schema with a stable,
+      machine-readable `code`, mapped to a fixed HTTP status (see below).
+    - All list endpoints share one pagination/sorting convention (`page`,
+      `page_size`, `sort`, `order`) and return `{ data, pagination }`.
+    - Every cache-backed resource carries `synced_at`. The dashboard must never
+      assume the data is fresh (docs/adr/003-architecture.md §3, §5).
+    - Data comes from our Postgres cache, never from a live UniFi proxy. A slow
+      or offline controller degrades to stale data plus a visible marker, not a
+      500.
+
+    **Error model.** `{ code, message, details }` is the only error shape.
+    `code` is the stable branch point for clients; HTTP status is derived from
+    it. `details.request_id` is always present for log correlation.
+
+    | code | HTTP | meaning |
+    |---|---|---|
+    | `validation_failed` | 400 | request failed input validation |
+    | `unauthorized` | 401 | no/expired session |
+    | `forbidden` | 403 | session lacks the required role |
+    | `not_found` | 404 | resource not in the cache |
+    | `rate_limited` | 429 | caller exceeded a rate limit (`Retry-After`) |
+    | `unifi_unreachable` | 503 | controller unreachable (serving stale cache) |
+    | `unifi_schema_drift` | 503 | controller response did not match expectations |
+    | `internal_error` | 500 | unexpected server-side failure |
+    | `unifi_unauthorized` | 502 | our UniFi key is invalid/expired |
+    | `unifi_forbidden` | 502 | our UniFi key lacks the scope |
+
+    Adapter-internal kinds (`unifi_not_found`, `unifi_server_error` in
+    docs/adr/003-architecture.md §2) are **not** client-facing: the API maps
+    them onto the codes above and never forwards a raw UniFi envelope or error.
+
+    **Write endpoints are proposed and gated.** The two action endpoints carry
+    `x-status: proposed-gated`; they are not enabled in phase 1. Phase 1 is
+    read-only against UniFi (docs/adr/001-unifi-api.md, open item #2).
 servers:
-  - url: http://localhost:8080
-    description: Local development (docker compose)
+  - url: /api/v1
+    description: Same-origin deployment behind Caddy (production).
+  - url: http://localhost:8080/api/v1
+    description: Local development (docker compose).
 security:
   - sessionCookie: []
 tags:
   - name: health
     description: Liveness, readiness and operational status probes.
+  - name: auth
+    description: Operator login/logout and the current operator.
+  - name: sites
+    description: UniFi sites managed by this control plane.
+  - name: devices
+    description: APs, switches and gateways (cached from UniFi).
+  - name: clients
+    description: Connected clients (cached; current state + history).
+  - name: networks
+    description: VLAN/subnet configuration (a UniFi *network*, not a WLAN).
+  - name: write
+    description: Gated UniFi write operations. Proposed, not enabled in phase 1.
+
 paths:
   /health:
     get:
@@ -34,38 +87,928 @@ paths:
       responses:
         "200":
           description: Process is alive.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Health"
+              examples:
+                ok:
+                  value:
+                    status: ok
+                    time: "2026-10-06T15:40:00Z"
+
   /ready:
     get:
       operationId: getReady
       tags: [health]
       security: []
       summary: Readiness probe
-      description: Returns 200 when the database is reachable; 503 otherwise.
+      description: |
+        Returns 200 when the database is reachable and the last successful sync
+        is younger than `SYNC_STALE_AFTER`; 503 otherwise. Liveness is
+        deliberately separate from readiness so an offline controller degrades
+        readiness instead of crashing the container.
       responses:
         "200":
           description: Ready to serve traffic.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Readiness"
+              examples:
+                ready:
+                  value:
+                    status: ready
+                    unifi_enabled: true
+                    unifi_mode: cloud
+                    last_successful_sync_at: "2026-10-06T15:39:10Z"
+                    stale: false
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+
   /sync/status:
     get:
       operationId: getSyncStatus
       tags: [health]
       summary: Cache freshness for operators
+      description: |
+        Operational status of the sync worker. This is the endpoint the
+        dashboard's "last synced" indicator reads, so freshness has exactly one
+        definition across the UI and alerting (docs/adr/003-architecture.md §6).
       responses:
         "200":
           description: Current sync/worker status.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SyncStatus"
+              examples:
+                healthy:
+                  value:
+                    worker_running: true
+                    last_successful_sync_at: "2026-10-06T15:39:10Z"
+                    consecutive_failures: 0
+                    stale: false
+                    stale_after_seconds: 180
+                    circuit_breaker:
+                      state: closed
+                      opened_at: null
+                    unifi:
+                      reachable: true
+                      surface: cloud
+                      last_error_kind: null
+                    last_run:
+                      surface: cloud
+                      trigger: schedule
+                      status: success
+                      started_at: "2026-10-06T15:39:05Z"
+                      finished_at: "2026-10-06T15:39:10Z"
+                      duration_ms: 4820
+                      sites_total: 21
+                      sites_ok: 21
+                      sites_failed: 0
+                      devices_upserted: 118
+                      clients_upserted: 63
+                      networks_upserted: 22
+                      rate_limited: false
+                      error_kind: null
+                      error_message: null
+                stale_controller_offline:
+                  summary: Controller unreachable — cache is served and marked stale.
+                  value:
+                    worker_running: true
+                    last_successful_sync_at: "2026-10-06T14:12:00Z"
+                    consecutive_failures: 6
+                    stale: true
+                    stale_after_seconds: 180
+                    circuit_breaker:
+                      state: open
+                      opened_at: "2026-10-06T14:20:00Z"
+                    unifi:
+                      reachable: false
+                      surface: cloud
+                      last_error_kind: unifi_unreachable
+                    last_run:
+                      surface: cloud
+                      trigger: schedule
+                      status: failed
+                      started_at: "2026-10-06T15:39:05Z"
+                      finished_at: "2026-10-06T15:39:16Z"
+                      duration_ms: 11200
+                      sites_total: 21
+                      sites_ok: 0
+                      sites_failed: 21
+                      devices_upserted: 0
+                      clients_upserted: 0
+                      networks_upserted: 0
+                      rate_limited: false
+                      error_kind: unifi_unreachable
+                      error_message: UniFi controller is not reachable
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      security: []
+      summary: Log in an operator
+      description: |
+        Verifies credentials and creates a server-side session. On success the
+        response sets the `HttpOnly`/`Secure`/`SameSite=Lax` session cookie; the
+        token itself is never exposed in the body. Rate-limited because it is an
+        unauthenticated credential endpoint.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            examples:
+              operator:
+                value:
+                  email: operator@example.com
+                  password: correct-horse-battery-staple
+      responses:
+        "200":
+          description: "Session created; sets `Set-Cookie: session=...`."
+          headers:
+            Set-Cookie:
+              description: The operator session cookie (HttpOnly, Secure, SameSite=Lax).
+              schema:
+                type: string
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+              examples:
+                logged_in:
+                  value:
+                    user:
+                      id: 8f14e45f-ea0d-4c1b-9a3e-1f2a3b4c5d6e
+                      email: operator@example.com
+                      role: operator
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Log out an operator
+      description: Revokes the current server-side session and clears the cookie. Idempotent.
+      responses:
+        "204":
+          description: Session revoked (or already absent).
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /me:
+    get:
+      operationId: getCurrentUser
+      tags: [auth]
+      summary: Current operator
+      description: Returns the authenticated operator. Useful as the SPA's session probe on load.
+      responses:
+        "200":
+          description: The authenticated operator.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+              examples:
+                viewer:
+                  value:
+                    id: 8f14e45f-ea0d-4c1b-9a3e-1f2a3b4c5d6e
+                    email: operator@example.com
+                    role: operator
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sites:
+    get:
+      operationId: listSites
+      tags: [sites]
+      summary: List sites
+      description: All UniFi sites known to the control plane, served from the local cache.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Order"
+        - name: sort
+          in: query
+          required: false
+          description: Field to sort by.
+          schema:
+            type: string
+            enum: [name, synced_at]
+            default: name
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive substring match on name.
+          schema:
+            type: string
+            maxLength: 128
+      responses:
+        "200":
+          description: A page of sites.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SiteList"
+              examples:
+                page_one:
+                  value:
+                    data:
+                      - id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                        name: HQ
+                        description: Head office
+                        timezone: Asia/Jakarta
+                        gateway_mac: aa:bb:cc:dd:ee:01
+                        synced_at: "2026-10-06T15:39:10Z"
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 1
+                      total_pages: 1
+                empty:
+                  summary: No sites synced yet.
+                  value:
+                    data: []
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 0
+                      total_pages: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /sites/{id}:
+    get:
+      operationId: getSite
+      tags: [sites]
+      summary: Get a site
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: The site.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Site"
+              examples:
+                hq:
+                  value:
+                    id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                    name: HQ
+                    description: Head office
+                    timezone: Asia/Jakarta
+                    gateway_mac: aa:bb:cc:dd:ee:01
+                    synced_at: "2026-10-06T15:39:10Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /devices:
+    get:
+      operationId: listDevices
+      tags: [devices]
+      summary: List devices
+      description: APs, switches and gateways, served from the cache. Filter server-side; do not fetch everything and filter in the browser.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Order"
+        - name: site_id
+          in: query
+          required: false
+          description: Restrict to one site (local resource id).
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          description: UniFi device state, upper-case (e.g. `ONLINE`, `OFFLINE`, `ADOPTING`).
+          schema:
+            type: string
+            maxLength: 32
+        - name: device_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ap, switch, gateway, other]
+        - name: mac
+          in: query
+          required: false
+          description: Exact MAC match, normalized lower-case colon-separated.
+          schema:
+            type: string
+            example: aa:bb:cc:dd:ee:02
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [name, model, status, adopted_at, synced_at]
+            default: name
+      responses:
+        "200":
+          description: A page of devices.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceList"
+              examples:
+                page_one:
+                  value:
+                    data:
+                      - id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                        site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                        name: AP-Lobby
+                        mac: aa:bb:cc:dd:ee:02
+                        model: U6 Pro
+                        device_type: ap
+                        status: ONLINE
+                        firmware_version: 6.8.2
+                        firmware_updatable: false
+                        ip_address: 10.20.0.31
+                        adopted_at: "2025-06-02T07:02:25Z"
+                        provisioned_at: "2026-08-05T02:06:38Z"
+                        uplink_device_id: 3b4c5d6e-7f8a-4b9c-0d1e-2f3a4b5c6d7e
+                        supported: true
+                        radios:
+                          - wlan_standard: "802.11ax"
+                            frequency_ghz: 2.4
+                            channel_width_mhz: 20
+                            channel: 11
+                        uptime_sec: null
+                        synced_at: "2026-10-06T15:39:10Z"
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 1
+                      total_pages: 1
+                empty:
+                  value:
+                    data: []
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 0
+                      total_pages: 0
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /devices/{id}:
+    get:
+      operationId: getDevice
+      tags: [devices]
+      summary: Get a device
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: The device.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Device"
+              examples:
+                ap_lobby:
+                  value:
+                    id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                    site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                    name: AP-Lobby
+                    mac: aa:bb:cc:dd:ee:02
+                    model: U6 Pro
+                    device_type: ap
+                    status: ONLINE
+                    firmware_version: 6.8.2
+                    firmware_updatable: false
+                    ip_address: 10.20.0.31
+                    adopted_at: "2025-06-02T07:02:25Z"
+                    provisioned_at: "2026-08-05T02:06:38Z"
+                    uplink_device_id: 3b4c5d6e-7f8a-4b9c-0d1e-2f3a4b5c6d7e
+                    supported: true
+                    radios:
+                      - wlan_standard: "802.11ax"
+                        frequency_ghz: 2.4
+                        channel_width_mhz: 20
+                        channel: 11
+                    uptime_sec: null
+                    synced_at: "2026-10-06T15:39:10Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /clients:
+    get:
+      operationId: listClients
+      tags: [clients]
+      summary: List clients
+      description: |
+        Clients seen by the control plane. Integration API v1 returns only
+        **active** clients, so `connected=false` rows are historical rows our
+        worker has marked disconnected (docs/data-model.md §4.1).
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Order"
+        - name: site_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: connected
+          in: query
+          required: false
+          description: Filter on connection state. Omit to return both connected and historical rows.
+          schema:
+            type: boolean
+        - name: uplink_device_id
+          in: query
+          required: false
+          description: Filter to clients attached to one AP/switch (local device id).
+          schema:
+            type: string
+            format: uuid
+        - name: client_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [WIRELESS, WIRED]
+        - name: mac
+          in: query
+          required: false
+          description: Exact MAC match, normalized lower-case colon-separated.
+          schema:
+            type: string
+            example: aa:bb:cc:dd:ee:03
+        - name: ssid
+          in: query
+          required: false
+          description: |
+            Filter by SSID. **Currently inert:** Integration API v1 does not
+            expose SSID per client (`docs/data-model.md` §4.5), so `clients.ssid`
+            is always null and this filter matches nothing until a WiFi surface
+            exists. It is published now so the dashboard does not need a
+            contract change later.
+          schema:
+            type: string
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [hostname, last_seen, connected_at, synced_at]
+            default: last_seen
+      responses:
+        "200":
+          description: A page of clients.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClientList"
+              examples:
+                connected_page:
+                  value:
+                    data:
+                      - id: 4c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e8f
+                        site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                        mac: aa:bb:cc:dd:ee:03
+                        hostname: ivan-laptop
+                        ip_address: 10.20.5.44
+                        client_type: WIRELESS
+                        access_type: DEFAULT
+                        uplink_device_id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                        ssid: null
+                        signal_dbm: null
+                        is_connected: true
+                        connected_at: "2026-09-14T02:06:45Z"
+                        disconnected_at: null
+                        first_seen: "2026-08-01T09:12:00Z"
+                        last_seen: "2026-10-06T15:39:05Z"
+                        synced_at: "2026-10-06T15:39:10Z"
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 1
+                      total_pages: 1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /clients/{id}:
+    get:
+      operationId: getClient
+      tags: [clients]
+      summary: Get a client
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: The client.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Client"
+              examples:
+                laptop:
+                  value:
+                    id: 4c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e8f
+                    site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                    mac: aa:bb:cc:dd:ee:03
+                    hostname: ivan-laptop
+                    ip_address: 10.20.5.44
+                    client_type: WIRELESS
+                    access_type: DEFAULT
+                    uplink_device_id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                    ssid: null
+                    signal_dbm: null
+                    is_connected: true
+                    connected_at: "2026-09-14T02:06:45Z"
+                    disconnected_at: null
+                    first_seen: "2026-08-01T09:12:00Z"
+                    last_seen: "2026-10-06T15:39:05Z"
+                    synced_at: "2026-10-06T15:39:10Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /networks:
+    get:
+      operationId: listNetworks
+      tags: [networks]
+      summary: List networks
+      description: |
+        UniFi **networks** (VLAN/subnet/DHCP configuration). This is not a WLAN:
+        SSID and security mode are not exposed by Integration API v1
+        (`/wifi` → 404, docs/adr/001-unifi-api.md), so no `/wifi-broadcasts`
+        endpoint exists yet. That resource lands with a new ADR once a WiFi
+        surface is approved (docs/data-model.md §5).
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - $ref: "#/components/parameters/Order"
+        - name: site_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: vlan_id
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 4094
+        - name: management
+          in: query
+          required: false
+          description: UniFi `management` value, e.g. `GATEWAY`, `SWITCH`, `UNMANAGED`.
+          schema:
+            type: string
+            maxLength: 32
+        - name: enabled
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [name, vlan_id, synced_at]
+            default: vlan_id
+      responses:
+        "200":
+          description: A page of networks.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetworkList"
+              examples:
+                page_one:
+                  value:
+                    data:
+                      - id: 5d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9a
+                        site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                        name: Default
+                        vlan_id: 1
+                        management: GATEWAY
+                        enabled: true
+                        is_default: true
+                        origin: SYSTEM_DEFINED
+                        configurable: true
+                        synced_at: "2026-10-06T15:39:10Z"
+                    pagination:
+                      page: 1
+                      page_size: 50
+                      total: 1
+                      total_pages: 1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /networks/{id}:
+    get:
+      operationId: getNetwork
+      tags: [networks]
+      summary: Get a network
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+      responses:
+        "200":
+          description: The network.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Network"
+              examples:
+                default:
+                  value:
+                    id: 5d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9a
+                    site_id: 1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c
+                    name: Default
+                    vlan_id: 1
+                    management: GATEWAY
+                    enabled: true
+                    is_default: true
+                    origin: SYSTEM_DEFINED
+                    configurable: true
+                    synced_at: "2026-10-06T15:39:10Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /devices/{id}/actions:
+    post:
+      operationId: runDeviceAction
+      x-status: proposed-gated
+      tags: [write]
+      summary: "GATED — run a device action (e.g. RESTART)"
+      description: |
+        **Not enabled in phase 1.** Phase 1 is read-only against UniFi; this
+        operation is proposed and requires explicit approval of the API key's
+        write scope before it is enabled (docs/adr/001-unifi-api.md, open items
+        #1–#2). While disabled the API answers `403 forbidden` with
+        `details.reason = "write_disabled"`, so the frontend can build against a
+        stable shape now.
+
+        When enabled it requires role `admin`, a CSRF token, is rate-limited,
+        and **always** writes an `audit_log` row before returning. The accepted
+        action names must first be verified on a staging console — do not assume
+        `RESTART` is the only one.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          description: CSRF token bound to the operator session (double-submit).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeviceActionRequest"
+            examples:
+              restart:
+                value:
+                  action: RESTART
+      responses:
+        "202":
+          description: Action accepted and queued; an audit entry already exists.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionAccepted"
+              examples:
+                accepted:
+                  value:
+                    audit_id: 1042
+                    action: RESTART
+                    target_type: device
+                    target_id: 2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d
+                    status: accepted
+                    accepted_at: "2026-10-06T15:41:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /clients/{id}/actions:
+    post:
+      operationId: runClientAction
+      x-status: proposed-gated
+      tags: [write]
+      summary: "GATED — run a client action (BLOCK / UNBLOCK)"
+      description: |
+        **Not enabled in phase 1** — same gating as device actions: approval
+        required, role `admin`, CSRF token, rate limit, mandatory audit entry.
+        While disabled the API answers `403 forbidden` with
+        `details.reason = "write_disabled"`.
+      security:
+        - sessionCookie: []
+          csrfToken: []
+      parameters:
+        - $ref: "#/components/parameters/ResourceId"
+        - name: X-CSRF-Token
+          in: header
+          required: true
+          description: CSRF token bound to the operator session (double-submit).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClientActionRequest"
+            examples:
+              block:
+                value:
+                  action: BLOCK
+      responses:
+        "202":
+          description: Action accepted and queued; an audit entry already exists.
+          headers:
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionAccepted"
+              examples:
+                accepted:
+                  value:
+                    audit_id: 1043
+                    action: BLOCK
+                    target_type: client
+                    target_id: 4c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e8f
+                    status: accepted
+                    accepted_at: "2026-10-06T15:41:30Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
 components:
   securitySchemes:
     sessionCookie:
@@ -73,9 +1016,62 @@ components:
       in: cookie
       name: session
       description: |
-        Server-side operator session cookie, HttpOnly/Secure/SameSite=Lax
-        (docs/adr/002-tech-stack.md §6). Auth is not implemented yet; it lands
-        with ZENI-6. The /sync/status operation shows the intended requirement.
+        Server-side operator session cookie (HttpOnly/Secure/SameSite=Lax).
+        Created by `POST /auth/login`; see docs/adr/002-tech-stack.md §6.
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Double-submit CSRF token required on write operations.
+
+  headers:
+    RequestId:
+      description: Correlation id, also present in log records.
+      schema:
+        type: string
+    RetryAfter:
+      description: Seconds to wait before retrying (rate limit feedback).
+      schema:
+        type: integer
+        minimum: 1
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      description: 1-based page number.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: Items per page. Server-side cap protects the controller and DB.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
+    Order:
+      name: order
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+    ResourceId:
+      name: id
+      in: path
+      required: true
+      description: Local (control-plane) resource id, not a UniFi id.
+      schema:
+        type: string
+        format: uuid
+
   schemas:
     Health:
       type: object
@@ -99,6 +1095,13 @@ components:
         unifi_mode:
           type: string
           enum: [cloud, local]
+        last_successful_sync_at:
+          type: [string, "null"]
+          format: date-time
+          description: Null until the sync worker has completed a cycle.
+        stale:
+          type: boolean
+          description: True when the cache is older than `stale_after_seconds`.
     SyncStatus:
       type: object
       required:
@@ -109,7 +1112,7 @@ components:
         last_successful_sync_at:
           type: [string, "null"]
           format: date-time
-          description: Null until the sync worker (ZENI-5) has completed a cycle.
+          description: Null until the sync worker has completed a cycle.
         consecutive_failures:
           type: integer
           minimum: 0
@@ -118,6 +1121,249 @@ components:
         stale_after_seconds:
           type: integer
           minimum: 1
+        circuit_breaker:
+          $ref: "#/components/schemas/CircuitBreaker"
+        unifi:
+          $ref: "#/components/schemas/UnifiHealth"
+        last_run:
+          $ref: "#/components/schemas/SyncRun"
+    CircuitBreaker:
+      type: object
+      description: Per-controller breaker state (docs/adr/003-architecture.md §3).
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [closed, open, half_open]
+        opened_at:
+          type: [string, "null"]
+          format: date-time
+    UnifiHealth:
+      type: object
+      description: Reachability of the UniFi surface used by the last sync.
+      properties:
+        reachable:
+          type: boolean
+        surface:
+          type: string
+          enum: [cloud, console, mixed]
+        last_error_kind:
+          type: [string, "null"]
+          description: Adapter error kind of the last failed call, sanitized (no key/headers).
+    SyncRun:
+      type: object
+      description: One sync cycle (maps to `sync_runs`; docs/data-model.md §2).
+      properties:
+        surface: {type: string, enum: [cloud, console, mixed]}
+        trigger: {type: string, enum: [schedule, manual, startup]}
+        status: {type: string, enum: [running, success, partial, failed, skipped]}
+        started_at: {type: string, format: date-time}
+        finished_at: {type: [string, "null"], format: date-time}
+        duration_ms: {type: [integer, "null"], minimum: 0}
+        sites_total: {type: integer, minimum: 0}
+        sites_ok: {type: integer, minimum: 0}
+        sites_failed: {type: integer, minimum: 0}
+        devices_upserted: {type: integer, minimum: 0}
+        clients_upserted: {type: integer, minimum: 0}
+        networks_upserted: {type: integer, minimum: 0}
+        rate_limited: {type: boolean}
+        error_kind:
+          type: [string, "null"]
+          description: Sanitized adapter error kind; never a raw message with credentials.
+        error_message:
+          type: [string, "null"]
+          description: Human-readable, sanitized.
+    Pagination:
+      type: object
+      required: [page, page_size, total, total_pages]
+      properties:
+        page: {type: integer, minimum: 1}
+        page_size: {type: integer, minimum: 1, maximum: 200}
+        total: {type: integer, minimum: 0}
+        total_pages: {type: integer, minimum: 0}
+    User:
+      type: object
+      required: [id, email, role]
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string, format: email}
+        role: {type: string, enum: [viewer, operator, admin]}
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: {type: string, format: email}
+        password: {type: string, format: password, minLength: 8}
+    LoginResponse:
+      type: object
+      required: [user]
+      properties:
+        user: {$ref: "#/components/schemas/User"}
+    Site:
+      type: object
+      required: [id, name, synced_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        description: {type: [string, "null"]}
+        timezone: {type: [string, "null"], example: Asia/Jakarta}
+        gateway_mac:
+          type: [string, "null"]
+          description: Normalized lower-case, colon separated.
+        synced_at:
+          type: string
+          format: date-time
+          description: When this row was last refreshed from UniFi. Never omit.
+    SiteList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Site"}
+        pagination: {$ref: "#/components/schemas/Pagination"}
+    Radio:
+      type: object
+      description: |
+        Normalized radio summary from `interfaces.radios`. The raw UniFi
+        payload is not exposed (docs/adr/003-architecture.md §2).
+      properties:
+        wlan_standard: {type: [string, "null"], example: "802.11ax"}
+        frequency_ghz: {type: [number, "null"], example: 5}
+        channel_width_mhz: {type: [integer, "null"], example: 40}
+        channel: {type: [integer, "null"], example: 161}
+    Device:
+      type: object
+      required: [id, site_id, device_type, synced_at]
+      properties:
+        id: {type: string, format: uuid}
+        site_id: {type: string, format: uuid}
+        name: {type: [string, "null"]}
+        mac: {type: [string, "null"], description: "Normalized lower-case, colon separated."}
+        model: {type: [string, "null"], example: U6 Pro}
+        device_type:
+          type: string
+          enum: [ap, switch, gateway, other]
+        status:
+          type: [string, "null"]
+          description: UniFi `state`, upper-case (e.g. `ONLINE`, `OFFLINE`, `ADOPTING`). Open set — do not hard-code.
+          example: ONLINE
+        firmware_version: {type: [string, "null"], example: 6.8.2}
+        firmware_updatable: {type: [boolean, "null"]}
+        ip_address: {type: [string, "null"], format: ipv4}
+        adopted_at: {type: [string, "null"], format: date-time}
+        provisioned_at: {type: [string, "null"], format: date-time}
+        uplink_device_id:
+          type: [string, "null"]
+          description: UniFi id of the uplink device; not a local resource id.
+        supported: {type: [boolean, "null"]}
+        radios:
+          type: array
+          items: {$ref: "#/components/schemas/Radio"}
+          description: May be empty; derived from the device detail payload.
+        uptime_sec:
+          type: [integer, "null"]
+          minimum: 0
+          description: |
+            Not populated in phase 1: Integration API v1 exposes no verified
+            device telemetry surface (docs/data-model.md §4.5). Always null for now.
+        synced_at: {type: string, format: date-time}
+    DeviceList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Device"}
+        pagination: {$ref: "#/components/schemas/Pagination"}
+    Client:
+      type: object
+      required: [id, site_id, is_connected, first_seen, last_seen, synced_at]
+      properties:
+        id: {type: string, format: uuid}
+        site_id: {type: string, format: uuid}
+        mac: {type: [string, "null"], description: "Normalized lower-case, colon separated."}
+        hostname: {type: [string, "null"]}
+        ip_address: {type: [string, "null"], format: ipv4}
+        client_type: {type: [string, "null"], example: WIRELESS}
+        access_type: {type: [string, "null"], example: DEFAULT}
+        uplink_device_id:
+          type: [string, "null"]
+          description: UniFi id of the AP/switch the client is attached to.
+        ssid:
+          type: [string, "null"]
+          description: |
+            **Always null in phase 1.** Integration API v1 does not expose SSID
+            per client (docs/data-model.md §4.5). Render as "unknown", never
+            fabricate a value.
+        signal_dbm:
+          type: [integer, "null"]
+          description: |
+            **Always null in phase 1.** Signal strength is not exposed by
+            Integration API v1. Render as "unknown".
+        is_connected: {type: boolean}
+        connected_at: {type: [string, "null"], format: date-time}
+        disconnected_at: {type: [string, "null"], format: date-time}
+        first_seen: {type: string, format: date-time}
+        last_seen: {type: string, format: date-time}
+        synced_at: {type: string, format: date-time}
+    ClientList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Client"}
+        pagination: {$ref: "#/components/schemas/Pagination"}
+    Network:
+      type: object
+      required: [id, site_id, name, synced_at]
+      properties:
+        id: {type: string, format: uuid}
+        site_id: {type: string, format: uuid}
+        name: {type: string}
+        vlan_id: {type: [integer, "null"], minimum: 0, maximum: 4094}
+        management: {type: [string, "null"], example: GATEWAY}
+        enabled: {type: [boolean, "null"]}
+        is_default: {type: [boolean, "null"]}
+        origin: {type: [string, "null"], example: SYSTEM_DEFINED}
+        configurable: {type: [boolean, "null"]}
+        synced_at: {type: string, format: date-time}
+    NetworkList:
+      type: object
+      required: [data, pagination]
+      properties:
+        data:
+          type: array
+          items: {$ref: "#/components/schemas/Network"}
+        pagination: {$ref: "#/components/schemas/Pagination"}
+    DeviceActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [RESTART]
+          description: Action names must be verified against a staging console before enabling.
+    ClientActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [BLOCK, UNBLOCK]
+    ActionAccepted:
+      type: object
+      required: [audit_id, action, target_type, target_id, status, accepted_at]
+      properties:
+        audit_id:
+          type: integer
+          description: Id of the `audit_log` row written before the action was accepted.
+        action: {type: string}
+        target_type: {type: string, enum: [device, client]}
+        target_id: {type: string, format: uuid}
+        status: {type: string, enum: [accepted, queued]}
+        accepted_at: {type: string, format: date-time}
     Error:
       type: object
       description: The single error shape returned by every endpoint.
@@ -125,7 +1371,7 @@ components:
       properties:
         code:
           type: string
-          description: Stable, machine-readable code. Clients branch on this.
+          description: Stable, machine-readable code. Clients branch on this, never on the HTTP status or message.
           enum:
             - unifi_unreachable
             - unifi_unauthorized
@@ -145,10 +1391,155 @@ components:
           type: object
           additionalProperties: true
           description: Optional context. Always includes `request_id` for log correlation.
+
   responses:
-    ServiceUnavailable:
-      description: Dependency (database or UniFi cache) is not available.
+    BadRequest:
+      description: Request failed validation (`validation_failed`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/Error"
+          examples:
+            invalid_page:
+              value:
+                code: validation_failed
+                message: "page_size must be between 1 and 200"
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  fields:
+                    page_size: "must be between 1 and 200"
+    Unauthorized:
+      description: No valid session (`unauthorized`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            no_session:
+              value:
+                code: unauthorized
+                message: authentication required
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+    Forbidden:
+      description: Session lacks the required role (`forbidden`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            needs_admin:
+              value:
+                code: forbidden
+                message: admin role required
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+            write_disabled:
+              summary: Write endpoints are gated off in phase 1.
+              value:
+                code: forbidden
+                message: write operations are not enabled
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  reason: write_disabled
+    NotFound:
+      description: Resource is not present in the cache (`not_found`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            missing_device:
+              value:
+                code: not_found
+                message: device not found
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  resource: device
+    TooManyRequests:
+      description: Rate limit exceeded (`rate_limited`); retry after `Retry-After` seconds.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            limited:
+              value:
+                code: rate_limited
+                message: too many requests; retry after 30 seconds
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  retry_after_seconds: 30
+    BadGateway:
+      description: A UniFi credential/scope problem (`unifi_unauthorized` | `unifi_forbidden`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            key_invalid:
+              value:
+                code: unifi_unauthorized
+                message: UniFi credential is invalid or expired
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+    ServiceUnavailable:
+      description: Dependency unavailable, or the cache is stale (`unifi_unreachable` | `unifi_schema_drift` | `internal_error`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            controller_offline:
+              summary: Controller unreachable — the dashboard keeps rendering stale cache.
+              value:
+                code: unifi_unreachable
+                message: UniFi controller is not reachable
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  last_successful_sync_at: "2026-10-06T14:12:00Z"
+            schema_drift:
+              value:
+                code: unifi_schema_drift
+                message: UniFi response did not match the expected shape
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+    InternalError:
+      description: Unexpected server-side failure (`internal_error`).
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          examples:
+            db_down:
+              value:
+                code: internal_error
+                message: database is not reachable
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040

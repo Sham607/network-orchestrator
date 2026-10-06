@@ -83,8 +83,11 @@ func TestErrorStatusMapping(t *testing.T) {
 		CodeForbidden:        http.StatusForbidden,
 		CodeNotFound:         http.StatusNotFound,
 		CodeRateLimited:      http.StatusTooManyRequests,
+		CodeUnifiRateLimited: http.StatusTooManyRequests,
 		CodeUnifiUnreachable: http.StatusServiceUnavailable,
+		CodeUnifiSchemaDrift: http.StatusServiceUnavailable,
 		CodeUnifiAuthFailed:  http.StatusBadGateway,
+		CodeUnifiForbidden:   http.StatusBadGateway,
 		CodeInternalError:    http.StatusInternalServerError,
 	}
 	for code, want := range cases {

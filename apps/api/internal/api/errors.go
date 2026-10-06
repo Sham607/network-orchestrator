@@ -15,6 +15,7 @@ const (
 	CodeUnauthorized     Code = "unauthorized"
 	CodeForbidden        Code = "forbidden"
 	CodeRateLimited      Code = "rate_limited"
+	CodeUnifiRateLimited Code = "unifi_rate_limited"
 	CodeUnifiUnreachable Code = "unifi_unreachable"
 	CodeUnifiSchemaDrift Code = "unifi_schema_drift"
 	CodeUnifiAuthFailed  Code = "unifi_unauthorized"
@@ -40,7 +41,7 @@ func httpStatus(code Code) int {
 		return http.StatusForbidden
 	case CodeNotFound:
 		return http.StatusNotFound
-	case CodeRateLimited:
+	case CodeRateLimited, CodeUnifiRateLimited:
 		return http.StatusTooManyRequests
 	case CodeUnifiUnreachable, CodeUnifiSchemaDrift:
 		return http.StatusServiceUnavailable
