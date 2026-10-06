@@ -1,6 +1,6 @@
 # ADR-002 — Tech Stack Decision (BE / FE / DB / Realtime / Deploy / Auth)
 
-- **Status:** Accepted (dipindah ke `docs/adr/002-tech-stack.md` saat bootstrap ZENI-7; menunggu konfirmasi user atas pilihan stack)
+- **Status:** Accepted
 - **Date:** 2026-10-06
 - **Deciders:** Tech Lead
 - **Konteks epic:** [ZENI-1] Network Orchestrator — Foundation: Stack, Architecture & Data Model

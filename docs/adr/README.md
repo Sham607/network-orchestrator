@@ -5,9 +5,9 @@ line. A decision that changes gets a new ADR that supersedes the old one.
 
 | ADR | Title | Status |
 |---|---|---|
-| 001 | UniFi API surface & auth validation | Pending — owned by ZENI-2 (blocked on controller access; see that issue's comments) |
-| [002](002-tech-stack.md) | Tech stack decision (BE/FE/DB/realtime/deploy/auth) | Accepted (awaiting user confirmation) |
-| [003](003-architecture.md) | System architecture & UniFi integration boundary | Accepted (awaiting user confirmation) |
+| [001](001-unifi-api-surface.md) | UniFi API surface & auth validation | Accepted |
+| [002](002-tech-stack.md) | Tech stack decision (BE/FE/DB/realtime/deploy/auth) | Accepted |
+| [003](003-architecture.md) | System architecture & UniFi integration boundary | Accepted |
 
 ## How code maps to these decisions
 
@@ -19,6 +19,7 @@ line. A decision that changes gets a new ADR that supersedes the old one.
 | Liveness/readiness split (ADR-003 §6) | `/api/v1/health` vs `/api/v1/ready` |
 | Go 1.23 + chi + pgx, Postgres 16 (ADR-002) | `go.mod`, `docker-compose.yml` |
 | React + Vite SPA (ADR-002) | `apps/web` |
+| UniFi access lewat Connector Proxy cloud (ADR-001) | `apps/api/internal/unifi`, `UNIFI_SM_API_KEY` |
 
 ## Adding an ADR
 

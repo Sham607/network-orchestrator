@@ -1,6 +1,6 @@
 # ADR-003 — System Architecture & UniFi Integration Boundary
 
-- **Status:** Accepted (dipindah ke `docs/adr/003-architecture.md` saat bootstrap ZENI-7; menunggu konfirmasi user atas keputusan arsitektur)
+- **Status:** Accepted
 - **Date:** 2026-10-06
 - **Deciders:** Tech Lead
 - **Konteks epic:** [ZENI-1] Network Orchestrator — Foundation: Stack, Architecture & Data Model
