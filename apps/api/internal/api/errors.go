@@ -10,17 +10,18 @@ import (
 type Code string
 
 const (
-	CodeNotFound         Code = "not_found"
-	CodeValidationFailed Code = "validation_failed"
-	CodeUnauthorized     Code = "unauthorized"
-	CodeForbidden        Code = "forbidden"
-	CodeRateLimited      Code = "rate_limited"
-	CodeUnifiRateLimited Code = "unifi_rate_limited"
-	CodeUnifiUnreachable Code = "unifi_unreachable"
-	CodeUnifiSchemaDrift Code = "unifi_schema_drift"
-	CodeUnifiAuthFailed  Code = "unifi_unauthorized"
-	CodeUnifiForbidden   Code = "unifi_forbidden"
-	CodeInternalError    Code = "internal_error"
+	CodeNotFound           Code = "not_found"
+	CodeValidationFailed   Code = "validation_failed"
+	CodeUnauthorized       Code = "unauthorized"
+	CodeForbidden          Code = "forbidden"
+	CodeRateLimited        Code = "rate_limited"
+	CodeUnifiRateLimited   Code = "unifi_rate_limited"
+	CodeUnifiUnreachable   Code = "unifi_unreachable"
+	CodeUnifiSchemaDrift   Code = "unifi_schema_drift"
+	CodeUnifiAuthFailed    Code = "unifi_unauthorized"
+	CodeUnifiForbidden     Code = "unifi_forbidden"
+	CodeServiceUnavailable Code = "service_unavailable"
+	CodeInternalError      Code = "internal_error"
 )
 
 // ErrorBody is the single error shape returned by every endpoint.
@@ -44,6 +45,10 @@ func httpStatus(code Code) int {
 	case CodeRateLimited, CodeUnifiRateLimited:
 		return http.StatusTooManyRequests
 	case CodeUnifiUnreachable, CodeUnifiSchemaDrift:
+		return http.StatusServiceUnavailable
+	case CodeServiceUnavailable:
+		// A dependency the API itself needs is down (ADR-004). Distinct from
+		// internal_error: expected and recoverable, not a bug in our code.
 		return http.StatusServiceUnavailable
 	case CodeUnifiAuthFailed, CodeUnifiForbidden:
 		return http.StatusBadGateway

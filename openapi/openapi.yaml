@@ -40,6 +40,7 @@ info:
     | `forbidden` | 403 | session lacks the required role |
     | `not_found` | 404 | resource not in the cache |
     | `rate_limited` | 429 | caller exceeded a rate limit (`Retry-After`) |
+    | `service_unavailable` | 503 | a dependency the API needs (e.g. the database) is unavailable |
     | `unifi_unreachable` | 503 | controller unreachable (serving stale cache) |
     | `unifi_schema_drift` | 503 | controller response did not match expectations |
     | `internal_error` | 500 | unexpected server-side failure |
@@ -111,6 +112,13 @@ paths:
         is younger than `SYNC_STALE_AFTER`; 503 otherwise. Liveness is
         deliberately separate from readiness so an offline controller degrades
         readiness instead of crashing the container.
+
+        The failure code is `service_unavailable` when our own database is
+        unreachable (`details.reason: database_unreachable`), and
+        `unifi_unreachable` when the controller is offline and the cache has
+        gone stale (ADR-004). Cache-staleness gating is not implemented yet: the
+        probe currently only checks the database, so `last_successful_sync_at`
+        and `stale` are absent from the response until the sync worker lands.
       responses:
         "200":
           description: Ready to serve traffic.
@@ -141,6 +149,11 @@ paths:
         Operational status of the sync worker. This is the endpoint the
         dashboard's "last synced" indicator reads, so freshness has exactly one
         definition across the UI and alerting (docs/adr/003-architecture.md §6).
+
+        The sync worker does not exist yet; until it does this endpoint serves
+        the documented shape with placeholder values (`stale: true`,
+        `worker_running: false`) rather than failing, so the dashboard can be
+        built against a stable shape.
       responses:
         "200":
           description: Current sync/worker status.
@@ -1383,6 +1396,7 @@ components:
             - unauthorized
             - forbidden
             - rate_limited
+            - service_unavailable
             - internal_error
         message:
           type: string
@@ -1504,7 +1518,7 @@ components:
                 details:
                   request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
     ServiceUnavailable:
-      description: Dependency unavailable, or the cache is stale (`unifi_unreachable` | `unifi_schema_drift` | `internal_error`).
+      description: Dependency unavailable, or the cache is stale (`service_unavailable` | `unifi_unreachable` | `unifi_schema_drift`).
       headers:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
@@ -1513,6 +1527,14 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
           examples:
+            database_unreachable:
+              summary: Our own database is down — readiness fails (ADR-004).
+              value:
+                code: service_unavailable
+                message: database is not reachable
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  reason: database_unreachable
             controller_offline:
               summary: Controller unreachable — the dashboard keeps rendering stale cache.
               value:
@@ -1537,9 +1559,9 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
           examples:
-            db_down:
+            unexpected_failure:
               value:
                 code: internal_error
-                message: database is not reachable
+                message: unexpected server-side failure
                 details:
                   request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040

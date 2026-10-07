@@ -42,12 +42,13 @@ grep -q '"status":"ok"' "$workdir/body" || { echo "FAIL: unexpected health body:
 grep -qi '^x-request-id:' "$workdir/headers" || { echo "FAIL: missing X-Request-Id header"; exit 1; }
 
 # Liveness must not depend on the database, so /ready is expected to fail here
-# (no Postgres in the smoke environment) — assert the failure is a clean 503,
-# not a crash or a 500.
-code=$(curl -s -o /dev/null -w '%{http_code}' "${base}/api/v1/ready")
-[ "$code" = "500" ] || [ "$code" = "503" ] || { echo "FAIL: /ready returned $code, want 500/503 with no database"; exit 1; }
+# (no Postgres in the smoke environment). Assert it fails the documented way —
+# 503 + code service_unavailable — and not as a crash or a 500 (ADR-004).
+code=$(curl -s -o "$workdir/ready" -w '%{http_code}' "${base}/api/v1/ready")
+[ "$code" = "503" ] || { echo "FAIL: /ready returned $code, want 503 with no database"; exit 1; }
+grep -q '"code":"service_unavailable"' "$workdir/ready" || { echo "FAIL: /ready body = $(cat "$workdir/ready"), want code service_unavailable"; exit 1; }
 
-echo "OK: liveness 200 + request id; /ready degrades cleanly without a database."
+echo "OK: liveness 200 + request id; /ready returns 503 service_unavailable without a database."
 
 echo "== phase 2: Site Manager read-only check =="
 if [ -z "${UNIFI_SM_API_KEY:-}" ]; then

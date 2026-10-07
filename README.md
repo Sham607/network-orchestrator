@@ -141,7 +141,7 @@ parallel (`openapi/mock-expectations.md`).
 | Endpoint | Purpose | State |
 |---|---|---|
 | `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. | **Served** |
-| `GET /api/v1/ready` | Readiness. 200 once the database answers. | **Served** |
+| `GET /api/v1/ready` | Readiness. 200 once the database answers; `503 service_unavailable` otherwise. | **Served** |
 | `GET /api/v1/sync/status` | Cache freshness for operators. | **Served, but values are placeholders** — `stale` is hardcoded `true` and `worker_running` `false` until the sync worker exists |
 | `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. | Contract only — returns 404 |
 | `GET /api/v1/sites` · `/sites/{id}` | Sites. | Contract only — returns 404 |
@@ -153,15 +153,20 @@ parallel (`openapi/mock-expectations.md`).
 Every error uses one shape: `{ "code", "message", "details" }`, where `code` is
 stable and machine-readable. See `openapi/openapi.yaml`.
 
-### Known gap in readiness — contradicts ADR-003
+### Readiness failure semantics
 
-ADR-003 §6 specifies `503` when readiness fails. The handler actually returns
-**`500 internal_error`**, because it reuses the generic internal error code
-instead of a service-unavailable one. `scripts/smoke.sh` accepts either `500` or
-`503`, so CI has never caught it. No issue filed for this yet.
+`/ready` fails with **`503 service_unavailable`** and
+`details.reason: database_unreachable` when the database is unreachable (ADR-004).
+A readiness failure is deliberately **not** `internal_error` — that code is
+reserved for unexpected bugs in our own code, and conflating the two makes
+alerting unable to tell "Postgres is restarting" from "we shipped a bug".
+`scripts/smoke.sh` asserts exactly `503` + `service_unavailable`, so a
+regression to `500` now fails CI.
 
-Cache-staleness gating in `/ready` is also specified by ADR-003 §6 but not
-implemented — the handler only pings the database.
+Cache-staleness gating in `/ready` is specified by ADR-003 §6 but not
+implemented yet — the handler only pings the database, so
+`last_successful_sync_at` and `stale` are absent from the 200 response until the
+sync worker exists.
 
 ## CI
 
@@ -204,4 +209,5 @@ Until then a direct push to `main` is possible and would bypass CI entirely.
 Read `docs/adr/` before proposing structural changes. ADR-001 fixes the UniFi
 access path and auth (Connector Proxy, read-only in phase 1), ADR-002 fixes the
 stack, ADR-003 fixes the module boundaries, credential handling and failure
-modes. A change to any of them requires a new ADR.
+modes, ADR-004 fixes the readiness failure code. A change to any of them
+requires a new ADR — they are immutable once accepted.

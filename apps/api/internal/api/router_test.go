@@ -52,15 +52,20 @@ func TestReadyFailsWhenDatabaseIsDown(t *testing.T) {
 	rr := httptest.NewRecorder()
 	testRouter(t, fakeDB{err: errors.New("connection refused")}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
 
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("ready status = %d, want %d", rr.Code, http.StatusInternalServerError)
+	// 503, not 500: an unreachable dependency is expected and recoverable,
+	// while 500/internal_error means a bug in our own code (ADR-004).
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want %d", rr.Code, http.StatusServiceUnavailable)
 	}
 	var body ErrorBody
 	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode error body: %v", err)
 	}
-	if body.Code != CodeInternalError {
-		t.Fatalf("code = %q, want %q", body.Code, CodeInternalError)
+	if body.Code != CodeServiceUnavailable {
+		t.Fatalf("code = %q, want %q", body.Code, CodeServiceUnavailable)
+	}
+	if body.Details["reason"] != "database_unreachable" {
+		t.Fatalf("details.reason = %v, want %q", body.Details["reason"], "database_unreachable")
 	}
 	if body.Details["request_id"] == "" {
 		t.Fatal("expected request_id in error details")
@@ -88,7 +93,9 @@ func TestErrorStatusMapping(t *testing.T) {
 		CodeUnifiSchemaDrift: http.StatusServiceUnavailable,
 		CodeUnifiAuthFailed:  http.StatusBadGateway,
 		CodeUnifiForbidden:   http.StatusBadGateway,
-		CodeInternalError:    http.StatusInternalServerError,
+		// ADR-004: a dependency we need is down — 503, deliberately not 500.
+		CodeServiceUnavailable: http.StatusServiceUnavailable,
+		CodeInternalError:      http.StatusInternalServerError,
 	}
 	for code, want := range cases {
 		if got := httpStatus(code); got != want {

@@ -53,8 +53,12 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleReady is a readiness probe: the process can serve traffic only if the
-// database is reachable. Cache-freshness gating arrives with the sync worker
-// (ZENI-5); until then readiness deliberately does not depend on UniFi.
+// database is reachable. Cache-freshness gating arrives with the sync worker;
+// until then readiness deliberately does not depend on UniFi (ADR-003 §6).
+//
+// A failure is 503 service_unavailable with a structured reason, not 500
+// internal_error: an unreachable dependency is expected and recoverable, while
+// internal_error means an unexpected bug (ADR-004).
 func handleReady(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.DB != nil {
@@ -62,7 +66,9 @@ func handleReady(deps Dependencies) http.HandlerFunc {
 			defer cancel()
 			if err := deps.DB.Ping(ctx); err != nil {
 				deps.Logger.Warn("readiness check failed", "module", "api", "event", "ready_failed", "reason", "database_unreachable")
-				writeError(w, r, CodeInternalError, "database is not reachable", nil)
+				writeError(w, r, CodeServiceUnavailable, "database is not reachable", map[string]any{
+					"reason": "database_unreachable",
+				})
 				return
 			}
 		}
@@ -75,8 +81,8 @@ func handleReady(deps Dependencies) http.HandlerFunc {
 }
 
 // handleSyncStatus reports cache freshness to operators. The shape is stable
-// now so the dashboard can be built against it; the sync worker (ZENI-5) will
-// start populating the values.
+// now so the dashboard can be built against it; the sync worker will start
+// populating the values.
 func handleSyncStatus(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
