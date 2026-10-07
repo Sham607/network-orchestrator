@@ -4,9 +4,16 @@ Internal control plane for the office UniFi ecosystem: read network state,
 cache it in Postgres, and expose it to an operator dashboard. Single-tenant,
 runs on one Linux host in the office network.
 
-**Status: bootstrap.** The repository skeleton, CI, environment wiring,
-container stack and health checks are in place. Feature work (UniFi adapter,
-domain schema, OpenAPI contract, dashboard) is tracked in the foundation epic.
+**Status: foundation decided, product not implemented.** In the repository and
+agreed: the stack (ADR-002), module boundaries and credential model (ADR-003),
+the UniFi access path (ADR-001), the phase-1 schema (`migrations/0001_init.sql`)
+and the phase-1 API contract (`openapi/openapi.yaml`).
+
+Implemented in code: configuration loading and validation, structured logging,
+the error model, and **three probe endpoints**. Not implemented: the UniFi
+adapter, the inventory sync worker, operator auth, and every resource endpoint.
+The contract describes them; the code does not serve them. See
+[API surface](#api-surface) for exactly what responds today.
 
 ---
 
@@ -29,6 +36,14 @@ cp .env.example .env      # local values only; never commit .env
 make bootstrap            # go mod download + npm ci
 
 make up                   # docker compose: API (:8080) + Postgres (:5432)
+
+# Apply the schema. "make up" does NOT run migrations — without this step the
+# database stays empty and goose_db_version never appears.
+export DATABASE_URL='postgres://orchestrator:orchestrator@localhost:5432/orchestrator?sslmode=disable'
+go run github.com/pressly/goose/v3/cmd/goose@latest \
+  -dir ./migrations postgres "$DATABASE_URL" up
+
+# Expect: {"status":"ok",...} with HTTP 200
 curl -s localhost:8080/api/v1/health
 ```
 
@@ -36,14 +51,22 @@ curl -s localhost:8080/api/v1/health
 the same configuration CI and the smoke test use. The service boots with no
 UniFi credentials present.
 
+`make down` stops the stack but **keeps the database volume**. To wipe the dev
+database and start over, use `docker compose down -v`.
+
 ### Running each part directly
 
 ```bash
-make smoke     # build + start the API + assert liveness/readiness behaviour
 make test      # Go unit tests
+make build     # API binary + web bundle
+make smoke     # build + start the API + assert liveness/readiness behaviour
 make web       # Vite dev server on :5173, proxies /api to :8080
-make check     # everything CI runs
+make check     # lint, test, import boundaries, secret scan, OpenAPI lint
 ```
+
+`make check` does **not** cover everything CI runs — CI additionally runs
+`make build` and `make smoke`. A green `make check` is not a green CI. Run all
+three before pushing.
 
 `make help` lists all targets.
 
@@ -74,6 +97,14 @@ Verify credential wiring without leaking it: `make smoke` only calls the live
 Site Manager API when `UNIFI_SM_API_KEY` is set in your environment, and it is
 read-only.
 
+> **The adapter is not implemented, so enabling UniFi does nothing yet.**
+> `UNIFI_ENABLED=true` currently only exercises configuration validation — no
+> UniFi request is made and no data is fetched. Setting it will not make
+> `/sites` work.
+> Note also that `UNIFI_MODE=local` requires `UNIFI_LOCAL_URL` to be set even
+> while the adapter is disabled, so leaving the default `cloud` mode is easier
+> for local work.
+
 ## Repository layout
 
 ```
@@ -83,14 +114,15 @@ apps/api          Go modular monolith (single binary)
     api           HTTP transport, error model, health endpoints
     config        env/secret reading + validation (the only place that reads env)
     observability structured logging, redaction
-    unifi         the ONLY package that talks to UniFi (interface + domain types)
-    inventory     local cache + sync worker        (ZENI-5)
-    identity      operators, sessions, RBAC        (ZENI-6)
-    audit         append-only action trail         (ZENI-5)
+    unifi         the ONLY package that talks to UniFi (interface + domain
+                  types only; no HTTP client yet)
+    inventory     local cache + sync worker        (schema exists, code pending)
+    identity      operators, sessions, RBAC        (code pending)
+    audit         append-only action trail         (schema exists, code pending)
 apps/web          React + TypeScript + Vite SPA
 docs/adr          architecture decision records
 openapi           the backend ↔ dashboard contract
-migrations        forward-only goose migrations   (ZENI-5)
+migrations        forward-only goose migrations
 scripts           import-boundary, secret scan, smoke test
 ```
 
@@ -106,20 +138,30 @@ write scope is approved. Resource handlers land in follow-up work; the contract
 and its mock expectations are complete today so the dashboard can be built in
 parallel (`openapi/mock-expectations.md`).
 
-| Endpoint | Purpose |
-|---|---|
-| `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. |
-| `GET /api/v1/ready` | Readiness. 503 when the database is unreachable or the cache is stale. |
-| `GET /api/v1/sync/status` | Cache freshness for operators. |
-| `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. |
-| `GET /api/v1/sites` · `/sites/{id}` | Sites. |
-| `GET /api/v1/devices` · `/devices/{id}` | APs, switches, gateways (filter by site/status/type/mac). |
-| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. |
-| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). |
-| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. |
+| Endpoint | Purpose | State |
+|---|---|---|
+| `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. | **Served** |
+| `GET /api/v1/ready` | Readiness. 200 once the database answers. | **Served** |
+| `GET /api/v1/sync/status` | Cache freshness for operators. | **Served, but values are placeholders** — `stale` is hardcoded `true` and `worker_running` `false` until the sync worker exists |
+| `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. | Contract only — returns 404 |
+| `GET /api/v1/sites` · `/sites/{id}` | Sites. | Contract only — returns 404 |
+| `GET /api/v1/devices` · `/devices/{id}` | APs, switches, gateways (filter by site/status/type/mac). | Contract only — returns 404 |
+| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | Contract only — returns 404 |
+| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | Contract only — returns 404 |
+| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | Contract only — returns 404 |
 
 Every error uses one shape: `{ "code", "message", "details" }`, where `code` is
 stable and machine-readable. See `openapi/openapi.yaml`.
+
+### Known gap in readiness — contradicts ADR-003
+
+ADR-003 §6 specifies `503` when readiness fails. The handler actually returns
+**`500 internal_error`**, because it reuses the generic internal error code
+instead of a service-unavailable one. `scripts/smoke.sh` accepts either `500` or
+`503`, so CI has never caught it. No issue filed for this yet.
+
+Cache-staleness gating in `/ready` is also specified by ADR-003 §6 but not
+implemented — the handler only pings the database.
 
 ## CI
 
@@ -149,13 +191,17 @@ manual, read-only step.
 
 ## Branch protection
 
-Recommended settings for `main` (configure in GitHub → Settings → Branches):
-require a pull request before merging, require the CI jobs to pass, and disallow
-force pushes and branch deletion. The bootstrap commit predates the protection
-rule; every later change should land through a PR.
+**Not enforced.** `main` is protected by convention only: changes land through a
+pull request with green CI. GitHub branch protection rules on a private
+repository require a paid plan, and this repository is not on one — that was
+verified, not assumed. Enforcing it for real means moving the repository to an
+organisation with a Team plan or above.
+
+Until then a direct push to `main` is possible and would bypass CI entirely.
 
 ## Decisions
 
-Read `docs/adr/` before proposing structural changes. ADR-002 fixes the stack,
-ADR-003 fixes the module boundaries, credential handling and failure modes. A
-change to either requires a new ADR.
+Read `docs/adr/` before proposing structural changes. ADR-001 fixes the UniFi
+access path and auth (Connector Proxy, read-only in phase 1), ADR-002 fixes the
+stack, ADR-003 fixes the module boundaries, credential handling and failure
+modes. A change to any of them requires a new ADR.
