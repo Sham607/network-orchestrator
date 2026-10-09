@@ -17,5 +17,8 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  // The Playwright suite is typechecked with the app: it is part of the web
+  // deliverable, and an untyped test is a test nobody can trust. Config files
+  // stay out, as vite.config.ts already does.
+  "include": ["src", "e2e"]
 }

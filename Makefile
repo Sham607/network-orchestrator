@@ -6,7 +6,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap check lint typecheck test test-web build smoke secrets imports openapi openapi-types web up down clean
+.PHONY: help bootstrap check lint typecheck test test-web build smoke e2e e2e-web secrets imports openapi openapi-types web up down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -19,8 +19,9 @@ bootstrap: ## Install dependencies for API and web
 check: lint typecheck test test-web imports secrets openapi openapi-types ## Run everything CI runs
 
 lint: ## Format check + go vet + web eslint
-	@test -z "$$(gofmt -l apps/api)" || { echo "gofmt found unformatted files:"; gofmt -l apps/api; exit 1; }
+	@test -z "$$(gofmt -l apps/api tests)" || { echo "gofmt found unformatted files:"; gofmt -l apps/api tests; exit 1; }
 	go vet ./apps/api/...
+	go vet -tags e2e ./tests/e2e/...
 	cd apps/web && npm run lint
 
 typecheck: ## TypeScript typecheck for the web app
@@ -50,6 +51,12 @@ openapi-types: ## Fail when the generated web API types drift from the contract
 
 smoke: ## End-to-end smoke test (no secrets required)
 	./scripts/smoke.sh
+
+e2e: ## E2E harness: real Postgres + mocked UniFi, no secrets required
+	./scripts/e2e.sh
+
+e2e-web: ## Playwright E2E for the dashboard against a mocked UniFi
+	./scripts/e2e-web.sh
 
 web: ## Run the SPA dev server (proxies /api to localhost:8080)
 	cd apps/web && npm run dev

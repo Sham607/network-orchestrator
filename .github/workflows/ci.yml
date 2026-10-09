@@ -22,12 +22,14 @@ jobs:
           cache: true
       - name: gofmt
         run: |
-          unformatted=$(gofmt -l apps/api)
+          unformatted=$(gofmt -l apps/api tests)
           if [ -n "$unformatted" ]; then
             echo "Unformatted files:"; echo "$unformatted"; exit 1
           fi
       - name: go vet
-        run: go vet ./apps/api/...
+        run: |
+          go vet ./apps/api/...
+          go vet -tags e2e ./tests/e2e/...
       - name: go build
         run: go build ./apps/api/...
       - name: go test
@@ -89,3 +91,77 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: ./scripts/smoke.sh
+
+  # The full integration harness: real Postgres, mocked UniFi. No repository
+  # secret is wired in here — the suite builds its own fixture key and strips
+  # inherited credentials, so this job is pure fixtures and never reaches a
+  # live controller.
+  e2e:
+    name: e2e (integration + vertical slice)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: orchestrator
+          POSTGRES_DB: orchestrator_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchestrator -d orchestrator_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: e2e
+        env:
+          E2E_DATABASE_URL: postgres://orchestrator:orchestrator@localhost:5432/orchestrator_e2e?sslmode=disable
+        run: ./scripts/e2e.sh
+
+  # The dashboard, driven by a real browser against the same mocked stack. Still
+  # no secret: the Go harness owns the API, the disposable database and the
+  # fixture controller, and the browser only ever talks to the Vite dev server.
+  e2e-web:
+    name: e2e-web (Playwright dashboard)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orchestrator
+          POSTGRES_PASSWORD: orchestrator
+          POSTGRES_DB: orchestrator_e2e
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U orchestrator -d orchestrator_e2e"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: install web dependencies
+        working-directory: apps/web
+        run: npm ci
+      - name: install the Chromium build Playwright needs
+        working-directory: apps/web
+        run: npx playwright install --with-deps chromium
+      - name: e2e-web
+        env:
+          E2E_DATABASE_URL: postgres://orchestrator:orchestrator@localhost:5432/orchestrator_e2e?sslmode=disable
+        run: ./scripts/e2e-web.sh

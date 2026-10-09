@@ -62,6 +62,8 @@ database and start over, use `docker compose down -v`.
 make test      # Go unit tests
 make test-web  # Web component tests (Vitest)
 make build     # API binary + web bundle
+make e2e       # integration harness: real Postgres + a mocked UniFi, no secrets
+make e2e-web   # the same stack, driven through the dashboard by Playwright
 make smoke     # build + start the API + assert liveness/readiness behaviour
 make web       # Vite dev server on :5173, proxies /api to :8080
 make check     # lint, typecheck, both test suites, import boundaries, secret
@@ -69,8 +71,8 @@ make check     # lint, typecheck, both test suites, import boundaries, secret
 ```
 
 `make check` does **not** cover everything CI runs — CI additionally runs
-`make build` and `make smoke`. A green `make check` is not a green CI. Run all
-three before pushing.
+`make build`, `make smoke`, `make e2e` and `make e2e-web`. A green `make check`
+is not a green CI. Run all of them before pushing.
 
 `make help` lists all targets.
 
@@ -127,10 +129,12 @@ apps/api          Go modular monolith (single binary)
     identity      operators, sessions, RBAC        (code pending)
     audit         append-only action trail         (audit_log writer)
 apps/web          React + TypeScript + Vite SPA
+  e2e             Playwright dashboard suite (run by tests/e2e)
 docs/adr          architecture decision records
 openapi           the backend ↔ dashboard contract
 migrations        forward-only goose migrations
-scripts           import-boundary, secret scan, smoke test
+scripts           import-boundary, secret scan, smoke test, e2e runners
+tests/e2e         integration harness (real Postgres + mocked UniFi)
 ```
 
 Dependencies flow one way: `api → inventory → unifi`, plus `audit`. The rule is
@@ -221,9 +225,28 @@ with `make test-web`.
 | `openapi` | Redocly lint of `openapi/openapi.yaml` |
 | `secrets` | `scripts/check-secrets.sh` — high-confidence secrets and TLS bypasses |
 | `smoke` | build the API, start it, assert liveness + clean readiness degradation |
+| `e2e` | full integration harness: real Postgres, mocked UniFi, contract-checked bodies |
+| `e2e-web` | Playwright drives the dashboard in Chromium against the same mocked stack |
 
 No CI job needs a UniFi key. Real-network verification stays a deliberate,
 manual, read-only step.
+
+### End-to-end harness
+
+`tests/e2e` (`//go:build e2e`) starts the real API binary against a disposable
+Postgres schema and an in-process mock of the UniFi surface, then asserts the
+whole vertical slice: sync → cache → `/sites` → `/devices`, plus readiness
+degradation and the read-only boundary. It carries no credentials and can never
+reach a live controller — the harness starts its own fixture server and strips
+inherited `UNIFI_*` variables from the API process it launches, which is why
+neither `e2e` job needs a secret.
+
+The dashboard is driven over the same stack: the harness starts the Vite dev
+server with its `/api` proxy pointed at the API and runs the Playwright suite in
+`apps/web/e2e`, so there is one set of fixtures and no second database
+bootstrap. `make e2e` and `make e2e-web` run both locally against the compose
+database; see `docs/testing/e2e-harness.md` for the full test matrix and the
+red→green evidence.
 
 ## Security rules
 

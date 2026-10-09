@@ -17,6 +17,12 @@ dist/
 *.tsbuildinfo
 npm-debug.log*
 
+# Playwright
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+apps/web/.playwright/
+
 # Local agent/tooling state
 .multica/
 .pi/
