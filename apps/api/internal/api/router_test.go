@@ -31,11 +31,17 @@ func testRouter(t *testing.T, db DB) http.Handler {
 
 func testRouterWith(t *testing.T, cfg config.Config, db DB, sync SyncStatusSource) http.Handler {
 	t.Helper()
+	return testRouterWithInventory(t, cfg, db, sync, nil)
+}
+
+func testRouterWithInventory(t *testing.T, cfg config.Config, db DB, sync SyncStatusSource, inv Inventory) http.Handler {
+	t.Helper()
 	return NewRouter(Dependencies{
-		Config: cfg,
-		Logger: slog.New(slog.NewTextHandler(discard{}, nil)),
-		DB:     db,
-		Sync:   sync,
+		Config:    cfg,
+		Logger:    slog.New(slog.NewTextHandler(discard{}, nil)),
+		DB:        db,
+		Sync:      sync,
+		Inventory: inv,
 	})
 }
 

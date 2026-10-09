@@ -125,6 +125,10 @@ func run() error {
 		}
 	}()
 
+	// The cache repository is shared by the writer (the sync worker) and the
+	// reader (the list endpoints).
+	repo := inventory.NewPostgresRepository(pool)
+
 	if cfg.UnifiEnabled {
 		client, err := newUnifiClient(cfg)
 		if err != nil {
@@ -132,7 +136,7 @@ func run() error {
 		}
 		worker := inventory.NewWorker(inventory.WorkerConfig{
 			Client:     client,
-			Repo:       inventory.NewPostgresRepository(pool),
+			Repo:       repo,
 			Audit:      audit.NewPostgresRecorder(pool),
 			Logger:     logger,
 			Surface:    surfaceName(cfg),
@@ -152,10 +156,11 @@ func run() error {
 	}
 
 	handler := api.NewRouter(api.Dependencies{
-		Config: cfg,
-		Logger: logger,
-		DB:     pool,
-		Sync:   syncStatus,
+		Config:    cfg,
+		Logger:    logger,
+		DB:        pool,
+		Sync:      syncStatus,
+		Inventory: repo,
 	})
 
 	srv := &http.Server{

@@ -13,12 +13,20 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/Sham607/network-orchestrator/apps/api/internal/config"
+	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 )
 
 // DB is the subset of the Postgres pool the transport needs. Keeping it as an
 // interface lets handler tests run without a database.
 type DB interface {
 	Ping(ctx context.Context) error
+}
+
+// Inventory is the cache read side the list endpoints need. Keeping it as an
+// interface lets handler tests run without a database and without UniFi.
+type Inventory interface {
+	ListSites(ctx context.Context, q inventory.SiteQuery) (inventory.SitePage, error)
+	ListDevices(ctx context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error)
 }
 
 // Dependencies are the collaborators a router needs.
@@ -29,6 +37,8 @@ type Dependencies struct {
 	// Sync is the cache-freshness view. It is nil when UniFi is disabled, which
 	// keeps /ready a database-only probe.
 	Sync SyncStatusSource
+	// Inventory serves the list endpoints from the cache. It is required.
+	Inventory Inventory
 }
 
 // NewRouter builds the API router.
@@ -41,6 +51,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/health", handleHealth)
 		r.Get("/ready", handleReady(deps))
 		r.Get("/sync/status", handleSyncStatus(deps))
+		r.Get("/sites", handleListSites(deps))
+		r.Get("/devices", handleListDevices(deps))
 	})
 
 	return r

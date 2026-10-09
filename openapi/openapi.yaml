@@ -40,6 +40,7 @@ info:
     | `forbidden` | 403 | session lacks the required role |
     | `not_found` | 404 | resource not in the cache |
     | `rate_limited` | 429 | caller exceeded a rate limit (`Retry-After`) |
+    | `unifi_rate_limited` | 429 | the controller rate-limited us (`Retry-After`); never hidden behind a 200 or a 5xx |
     | `service_unavailable` | 503 | a dependency the API needs (e.g. the database) is unavailable |
     | `unifi_unreachable` | 503 | controller unreachable (serving stale cache) |
     | `unifi_schema_drift` | 503 | controller response did not match expectations |
@@ -1491,7 +1492,7 @@ components:
                   request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
                   resource: device
     TooManyRequests:
-      description: Rate limit exceeded (`rate_limited`); retry after `Retry-After` seconds.
+      description: Rate limit exceeded (`rate_limited` | `unifi_rate_limited`); retry after `Retry-After` seconds.
       headers:
         X-Request-Id:
           $ref: "#/components/headers/RequestId"
@@ -1506,6 +1507,14 @@ components:
               value:
                 code: rate_limited
                 message: too many requests; retry after 30 seconds
+                details:
+                  request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
+                  retry_after_seconds: 30
+            controller_limited:
+              summary: The UniFi controller rate-limited us. Reported as its own code so the dashboard can back off instead of reading it as a caller error.
+              value:
+                code: unifi_rate_limited
+                message: UniFi controller rate-limited the request
                 details:
                   request_id: 01a111bd-15d0-7f21-aec2-20bd264a6040
                   retry_after_seconds: 30

@@ -139,8 +139,8 @@ enforced by `scripts/check-imports.sh` in CI, not by convention.
 `openapi/openapi.yaml` is the phase-1 contract: probes, operator auth, and the
 cache-backed `sites` / `devices` / `clients` / `networks` list and detail
 endpoints, plus two **gated** write operations that are disabled until the UniFi
-write scope is approved. Resource handlers land in follow-up work; the contract
-and its mock expectations are complete today so the dashboard can be built in
+write scope is approved. Resource handlers land incrementally; the contract and
+its mock expectations are complete today so the dashboard can be built in
 parallel (`openapi/mock-expectations.md`).
 
 | Endpoint | Purpose | State |
@@ -149,8 +149,10 @@ parallel (`openapi/mock-expectations.md`).
 | `GET /api/v1/ready` | Readiness. 200 once the database answers and, with UniFi enabled, the cache is fresher than `SYNC_STALE_AFTER`; `503 service_unavailable` / `503 unifi_unreachable` otherwise. | **Served** |
 | `GET /api/v1/sync/status` | Cache freshness for operators, read from the live worker. | **Served** |
 | `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. | Contract only — returns 404 |
-| `GET /api/v1/sites` · `/sites/{id}` | Sites. | Contract only — returns 404 |
-| `GET /api/v1/devices` · `/devices/{id}` | APs, switches, gateways (filter by site/status/type/mac). | Contract only — returns 404 |
+| `GET /api/v1/sites` | Sites from the cache: paged (`page`, `page_size`), sorted (`sort`, `order`), name search (`q`). | **Served** |
+| `GET /api/v1/sites/{id}` | One site. | Contract only — returns 404 |
+| `GET /api/v1/devices` | APs, switches, gateways from the cache (filter by site/status/type/mac), paged and sorted. | **Served** |
+| `GET /api/v1/devices/{id}` | One device. | Contract only — returns 404 |
 | `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | Contract only — returns 404 |
 | `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | Contract only — returns 404 |
 | `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | Contract only — returns 404 |

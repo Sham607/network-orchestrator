@@ -4,7 +4,9 @@ go 1.23
 
 require (
 	github.com/go-chi/chi/v5 v5.1.0
+	github.com/goccy/go-yaml v1.19.2
 	github.com/jackc/pgx/v5 v5.7.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 
 require (
