@@ -10,9 +10,10 @@ the UniFi access path (ADR-001), the phase-1 schema (`migrations/0001_init.sql`)
 and the phase-1 API contract (`openapi/openapi.yaml`).
 
 Implemented in code: configuration loading and validation, structured logging,
-the error model, the read-only UniFi adapter (both transports), and **three
-probe endpoints**. Not implemented: the inventory sync worker, operator auth,
-and every resource endpoint. The contract describes them; the code does not
+the error model, the read-only UniFi adapter (both transports), the inventory
+sync worker with its Postgres cache and audit trail, and **three probe
+endpoints**. Not implemented: operator auth and every resource endpoint. The
+contract describes them; the code does not
 serve them. See
 [API surface](#api-surface) for exactly what responds today.
 
@@ -98,14 +99,15 @@ Verify credential wiring without leaking it: `make smoke` only calls the live
 Site Manager API when `UNIFI_SM_API_KEY` is set in your environment, and it is
 read-only.
 
-> **The adapter is implemented but not yet wired into the API.**
+> **The adapter is wired into the API through the sync worker.**
 > `apps/api/internal/unifi` exposes both read-only transports behind the
 > `unifi.Client` interface (Site Manager cloud and per-console Connector
-> Proxy). The sync worker that consumes it lands in ZENI-14, so enabling UniFi
-> still makes no request at startup and `/sites` does not respond yet.
-> Note also that `UNIFI_MODE=local` requires `UNIFI_LOCAL_URL` to be set even
-> while the adapter is unwired, so leaving the default `cloud` mode is easier
-> for local work.
+> Proxy); `apps/api/internal/inventory` polls it into Postgres, records every
+> cycle in `sync_runs` and writes an audit entry per cycle. With
+> `UNIFI_ENABLED=false` no worker runs and no request is made.
+> Note also that `UNIFI_MODE=local` requires `UNIFI_LOCAL_URL` and
+> `UNIFI_CONSOLE_ID`, so leaving the default `cloud` mode is easier for local
+> work.
 
 ## Repository layout
 
@@ -118,9 +120,10 @@ apps/api          Go modular monolith (single binary)
     observability structured logging, redaction
     unifi         the ONLY package that talks to UniFi (read-only client:
                   cloud + console transports, interface + domain types)
-    inventory     local cache + sync worker        (schema exists, code pending)
+    inventory     local cache + sync worker        (sites/devices/clients/networks,
+                  sync_runs, circuit breaker)
     identity      operators, sessions, RBAC        (code pending)
-    audit         append-only action trail         (schema exists, code pending)
+    audit         append-only action trail         (audit_log writer)
 apps/web          React + TypeScript + Vite SPA
 docs/adr          architecture decision records
 openapi           the backend ↔ dashboard contract
@@ -143,8 +146,8 @@ parallel (`openapi/mock-expectations.md`).
 | Endpoint | Purpose | State |
 |---|---|---|
 | `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. | **Served** |
-| `GET /api/v1/ready` | Readiness. 200 once the database answers; `503 service_unavailable` otherwise. | **Served** |
-| `GET /api/v1/sync/status` | Cache freshness for operators. | **Served, but values are placeholders** — `stale` is hardcoded `true` and `worker_running` `false` until the sync worker exists |
+| `GET /api/v1/ready` | Readiness. 200 once the database answers and, with UniFi enabled, the cache is fresher than `SYNC_STALE_AFTER`; `503 service_unavailable` / `503 unifi_unreachable` otherwise. | **Served** |
+| `GET /api/v1/sync/status` | Cache freshness for operators, read from the live worker. | **Served** |
 | `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. | Contract only — returns 404 |
 | `GET /api/v1/sites` · `/sites/{id}` | Sites. | Contract only — returns 404 |
 | `GET /api/v1/devices` · `/devices/{id}` | APs, switches, gateways (filter by site/status/type/mac). | Contract only — returns 404 |
@@ -165,10 +168,13 @@ alerting unable to tell "Postgres is restarting" from "we shipped a bug".
 `scripts/smoke.sh` asserts exactly `503` + `service_unavailable`, so a
 regression to `500` now fails CI.
 
-Cache-staleness gating in `/ready` is specified by ADR-003 §6 but not
-implemented yet — the handler only pings the database, so
-`last_successful_sync_at` and `stale` are absent from the 200 response until the
-sync worker exists.
+With `UNIFI_ENABLED=true`, readiness additionally requires a cache fresher than
+`SYNC_STALE_AFTER` (ADR-003 §6). A stale cache fails with **`503
+unifi_unreachable`** and `details.reason: cache_stale`: the controller is the
+dependency that is broken, so naming it is what tells an operator whether to
+look at Postgres or at UniFi. The database is checked first, so a simultaneous
+outage is always reported as `service_unavailable`. With `UNIFI_ENABLED=false`
+there is no cache to be stale and the probe stays a database check.
 
 ## CI
 

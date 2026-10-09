@@ -26,6 +26,9 @@ type Dependencies struct {
 	Config config.Config
 	Logger *slog.Logger
 	DB     DB
+	// Sync is the cache-freshness view. It is nil when UniFi is disabled, which
+	// keeps /ready a database-only probe.
+	Sync SyncStatusSource
 }
 
 // NewRouter builds the API router.
@@ -52,13 +55,13 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// handleReady is a readiness probe: the process can serve traffic only if the
-// database is reachable. Cache-freshness gating arrives with the sync worker;
-// until then readiness deliberately does not depend on UniFi (ADR-003 §6).
+// handleReady is a readiness probe. It requires a reachable database and, when
+// UniFi is enabled, a cache fresher than SYNC_STALE_AFTER (ADR-003 §6).
 //
-// A failure is 503 service_unavailable with a structured reason, not 500
-// internal_error: an unreachable dependency is expected and recoverable, while
-// internal_error means an unexpected bug (ADR-004).
+// The database is checked first, so the two failures stay distinguishable: a
+// stale cache is 503 unifi_unreachable (the controller is the broken
+// dependency), an unreachable database is 503 service_unavailable. Neither is
+// 500 internal_error — that code means an unexpected bug (ADR-004).
 func handleReady(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.DB != nil {
@@ -72,25 +75,38 @@ func handleReady(deps Dependencies) http.HandlerFunc {
 				return
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
+
+		status := statusOf(deps)
+		body := map[string]any{
 			"status":        "ready",
 			"unifi_enabled": deps.Config.UnifiEnabled,
 			"unifi_mode":    string(deps.Config.UnifiMode),
-		})
+		}
+
+		if deps.Config.UnifiEnabled {
+			if status.Stale {
+				deps.Logger.Warn("readiness check failed", "module", "api", "event", "ready_failed", "reason", "cache_stale")
+				details := map[string]any{"reason": "cache_stale", "last_successful_sync_at": nil}
+				if status.LastSuccessfulSyncAt != nil {
+					details["last_successful_sync_at"] = formatTime(*status.LastSuccessfulSyncAt)
+				}
+				writeError(w, r, CodeUnifiUnreachable, "the UniFi cache is stale", details)
+				return
+			}
+			body["stale"] = false
+			body["last_successful_sync_at"] = nil
+			if status.LastSuccessfulSyncAt != nil {
+				body["last_successful_sync_at"] = formatTime(*status.LastSuccessfulSyncAt)
+			}
+		}
+
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 
-// handleSyncStatus reports cache freshness to operators. The shape is stable
-// now so the dashboard can be built against it; the sync worker will start
-// populating the values.
+// handleSyncStatus reports cache freshness to operators.
 func handleSyncStatus(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"worker_running":          false,
-			"last_successful_sync_at": nil,
-			"consecutive_failures":    0,
-			"stale":                   true,
-			"stale_after_seconds":     int(deps.Config.SyncStaleAfter.Seconds()),
-		})
+		writeJSON(w, http.StatusOK, syncStatusBody(statusOf(deps)))
 	}
 }

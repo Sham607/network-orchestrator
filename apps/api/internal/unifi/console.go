@@ -17,8 +17,9 @@ import (
 // cloud surface cannot answer clients/networks at all
 // (docs/adr/001-unifi-api-surface.md).
 type consoleClient struct {
-	t       *transport
-	baseURL string
+	t         *transport
+	baseURL   string
+	consoleID string
 }
 
 type consoleInfo struct {
@@ -102,7 +103,7 @@ func (c *consoleClient) ListSites(ctx context.Context) ([]Site, error) {
 	}
 	out := make([]Site, 0, len(items))
 	for _, s := range items {
-		out = append(out, Site{ID: s.ID, Name: s.Name, Desc: s.InternalReference})
+		out = append(out, Site{ID: s.ID, Name: s.Name, Desc: s.InternalReference, ConsoleID: c.consoleID, Raw: mustRaw(s)})
 	}
 	return out, nil
 }

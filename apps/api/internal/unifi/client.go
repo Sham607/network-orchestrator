@@ -142,7 +142,7 @@ func NewConsoleClient(cfg Config) (Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &consoleClient{t: t, baseURL: base}, nil
+	return &consoleClient{t: t, baseURL: base, consoleID: consoleID}, nil
 }
 
 func newTransport(cfg Config) (*transport, error) {

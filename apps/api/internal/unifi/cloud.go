@@ -80,7 +80,7 @@ func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 		if strings.TrimSpace(s.SiteID) == "" {
 			return nil, drift("site manager site entry is missing siteId")
 		}
-		out = append(out, Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc})
+		out = append(out, Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc, ConsoleID: s.HostID, Raw: mustRaw(s)})
 	}
 	return out, nil
 }

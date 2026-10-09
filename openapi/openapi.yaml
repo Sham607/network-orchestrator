@@ -116,9 +116,12 @@ paths:
         The failure code is `service_unavailable` when our own database is
         unreachable (`details.reason: database_unreachable`), and
         `unifi_unreachable` when the controller is offline and the cache has
-        gone stale (ADR-004). Cache-staleness gating is not implemented yet: the
-        probe currently only checks the database, so `last_successful_sync_at`
-        and `stale` are absent from the response until the sync worker lands.
+        gone stale (`details.reason: cache_stale`). The database is checked
+        first, so the two 503s stay distinguishable (ADR-004).
+
+        Staleness gating applies only when `UNIFI_ENABLED=true`; with UniFi
+        disabled the probe is a database check alone and `stale` /
+        `last_successful_sync_at` are omitted from the 200 response.
       responses:
         "200":
           description: Ready to serve traffic.
@@ -150,10 +153,11 @@ paths:
         dashboard's "last synced" indicator reads, so freshness has exactly one
         definition across the UI and alerting (docs/adr/003-architecture.md §6).
 
-        The sync worker does not exist yet; until it does this endpoint serves
-        the documented shape with placeholder values (`stale: true`,
-        `worker_running: false`) rather than failing, so the dashboard can be
-        built against a stable shape.
+        The sync worker populates these values from the cache: `stale` is true
+        while no cycle has ever succeeded or the last one is older than
+        `SYNC_STALE_AFTER`, and `last_successful_sync_at` moves on every cycle
+        that refreshed the cache. With `UNIFI_ENABLED=false` no worker runs and
+        the endpoint serves `worker_running: false`, `stale: true`.
       responses:
         "200":
           description: Current sync/worker status.
@@ -1129,6 +1133,10 @@ components:
         consecutive_failures:
           type: integer
           minimum: 0
+          description: |
+            Cycles that failed in a row because the controller was unreachable.
+            Failures on our own side (a database outage, say) are reported in
+            `last_run` but do not trip the circuit breaker.
         stale:
           type: boolean
         stale_after_seconds:
