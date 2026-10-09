@@ -245,10 +245,21 @@ func (s *stack) waitForStatus(path string, want int, timeout time.Duration) {
 	})
 }
 
-// waitForSynced waits until the worker has populated the cache.
+// waitForSynced waits until the worker has finished a successful sync and the
+// cache holds wantDevices devices.
+//
+// Both halves are required, and the second one is the point. The worker upserts
+// a site's rows inside the cycle, then records the run as successful when the
+// cycle ends, so the row count alone says "a cycle is in progress", not "a
+// cycle happened". In the gap between the two, /ready still answers
+// 503 cache_stale with last_successful_sync_at null, and a test that then
+// asserted a healthy cache raced that gap: on CI the merge commit for ZENI-16
+// failed TestControllerGoingOfflineMakesTheCacheStale at degradation_test.go:107
+// ("GET /api/v1/ready: status 503, want 200") on bytes identical to the PR run
+// that passed.
 func (s *stack) waitForSynced(wantDevices int) {
 	s.t.Helper()
-	s.waitFor(30*time.Second, "the sync worker to populate the device cache", func() bool {
+	s.waitFor(30*time.Second, "the sync worker to finish a sync and populate the device cache", func() bool {
 		code, body, err := s.do(http.MethodGet, "/api/v1/devices", nil)
 		if err != nil || code != http.StatusOK {
 			return false
@@ -261,7 +272,26 @@ func (s *stack) waitForSynced(wantDevices int) {
 		if err := json.Unmarshal(body, &page); err != nil {
 			return false
 		}
-		return page.Pagination.Total == wantDevices
+		if page.Pagination.Total != wantDevices {
+			return false
+		}
+
+		// The rows are in. Now require what /ready and the freshness gate
+		// actually read: a cycle that completed, on a cache that is still fresh.
+		code, body, err = s.do(http.MethodGet, "/api/v1/sync/status", nil)
+		if err != nil || code != http.StatusOK {
+			return false
+		}
+		var status struct {
+			Stale   bool `json:"stale"`
+			LastRun *struct {
+				Status string `json:"status"`
+			} `json:"last_run"`
+		}
+		if err := json.Unmarshal(body, &status); err != nil {
+			return false
+		}
+		return !status.Stale && status.LastRun != nil && status.LastRun.Status == "success"
 	})
 }
 
