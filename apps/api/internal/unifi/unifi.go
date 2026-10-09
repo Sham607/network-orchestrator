@@ -2,12 +2,13 @@
 // controller. No other package may know UniFi paths, headers, credentials or
 // raw response shapes (docs/adr/003-architecture.md §2).
 //
-// This package intentionally contains only the interface, the neutral domain
-// types and the typed error taxonomy at bootstrap time. The concrete HTTP
-// client (Site Manager cloud and console Integration API transports) lands with
-// ZENI-2, which decides the exact paths and auth flow. Read-only in phase 1;
-// write methods will be added as a separate Writer interface only once the API
-// key scope is approved.
+// This package contains the interface, the neutral domain types and the typed
+// error taxonomy, plus the read-only HTTP adapter behind that interface: the
+// Site Manager cloud transport (cloud.go) and the per-console Integration API
+// transport reached through the Connector Proxy (console.go), sharing one
+// bounded retry/timeout policy in client.go. Read-only in phase 1; write
+// methods will be added as a separate Writer interface only once the API key
+// scope is approved.
 package unifi
 
 import (

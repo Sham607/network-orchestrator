@@ -1,0 +1,23 @@
+{
+  "httpStatusCode": 200,
+  "traceId": "trace-devices",
+  "data": [
+    {
+      "hostId": "console-1",
+      "hostName": "HQ",
+      "updatedAt": "2026-10-08T05:40:29Z",
+      "devices": [
+        {"id": "dev-1", "mac": "aa:bb:cc:00:00:01", "name": "AP Lobby", "model": "U6 Pro", "ip": "10.0.0.11", "productLine": "network", "status": "online", "version": "6.8.2", "isConsole": false, "isManaged": true, "adoptionTime": "2025-06-02T07:02:25Z"},
+        {"id": "dev-2", "mac": "aa:bb:cc:00:00:02", "name": "UDM HQ", "model": "UDM Pro", "ip": "10.0.0.1", "productLine": "network", "status": "online", "version": "5.1.33", "isConsole": true, "isManaged": true, "adoptionTime": "2024-01-01T00:00:00Z", "features": ["switching"]}
+      ]
+    },
+    {
+      "hostId": "console-2",
+      "hostName": "Branch",
+      "updatedAt": "2026-10-08T05:40:29Z",
+      "devices": [
+        {"id": "dev-3", "mac": "aa:bb:cc:00:00:03", "name": "Switch Branch", "model": "USW-24", "status": "offline", "version": "7.0.0", "isConsole": false, "isManaged": true}
+      ]
+    }
+  ]
+}

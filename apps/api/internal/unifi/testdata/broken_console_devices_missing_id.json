@@ -1,0 +1,9 @@
+{
+  "offset": 0,
+  "limit": 200,
+  "count": 1,
+  "totalCount": 1,
+  "data": [
+    {"macAddress": "aa:bb:cc:00:00:01", "ipAddress": "10.0.0.11", "name": "AP with no id", "model": "U6 Pro", "state": "ONLINE"}
+  ]
+}

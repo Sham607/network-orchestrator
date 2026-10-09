@@ -1,0 +1,11 @@
+{
+  "offset": 0,
+  "limit": 200,
+  "count": 3,
+  "totalCount": 3,
+  "data": [
+    {"id": "cdev-1", "macAddress": "aa:bb:cc:00:00:01", "ipAddress": "10.0.0.11", "name": "AP Lobby", "model": "U6 Pro", "state": "ONLINE", "supported": true, "firmwareVersion": "6.8.2", "features": ["accessPoint"]},
+    {"id": "cdev-2", "macAddress": "aa:bb:cc:00:00:02", "ipAddress": "10.0.0.1", "name": "UDM HQ", "model": "UDM Pro", "state": "ONLINE", "supported": true, "firmwareVersion": "5.1.33", "features": ["switching"]},
+    {"id": "cdev-3", "macAddress": "aa:bb:cc:00:00:03", "name": "Switch Branch", "model": "USW-24", "state": "OFFLINE", "supported": true, "firmwareVersion": "7.0.0", "features": []}
+  ]
+}

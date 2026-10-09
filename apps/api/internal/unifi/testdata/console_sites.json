@@ -1,0 +1,10 @@
+{
+  "offset": 0,
+  "limit": 200,
+  "count": 2,
+  "totalCount": 2,
+  "data": [
+    {"id": "csite-1", "internalReference": "default", "name": "Default"},
+    {"id": "csite-2", "internalReference": "branch", "name": "Branch"}
+  ]
+}

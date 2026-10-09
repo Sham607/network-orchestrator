@@ -1,0 +1,10 @@
+{
+  "offset": 0,
+  "limit": 200,
+  "count": 2,
+  "totalCount": 2,
+  "data": [
+    {"management": "GATEWAY", "id": "net-1", "name": "Default", "enabled": true, "vlanId": 1, "metadata": {"origin": "SYSTEM_DEFINED", "configurable": true}, "default": true},
+    {"management": "SWITCH", "id": "net-2", "name": "Guest", "enabled": false, "vlanId": 20, "metadata": {"origin": "USER_DEFINED", "configurable": true}, "default": false}
+  ]
+}

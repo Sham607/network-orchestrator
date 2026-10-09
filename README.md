@@ -10,9 +10,10 @@ the UniFi access path (ADR-001), the phase-1 schema (`migrations/0001_init.sql`)
 and the phase-1 API contract (`openapi/openapi.yaml`).
 
 Implemented in code: configuration loading and validation, structured logging,
-the error model, and **three probe endpoints**. Not implemented: the UniFi
-adapter, the inventory sync worker, operator auth, and every resource endpoint.
-The contract describes them; the code does not serve them. See
+the error model, the read-only UniFi adapter (both transports), and **three
+probe endpoints**. Not implemented: the inventory sync worker, operator auth,
+and every resource endpoint. The contract describes them; the code does not
+serve them. See
 [API surface](#api-surface) for exactly what responds today.
 
 ---
@@ -97,12 +98,13 @@ Verify credential wiring without leaking it: `make smoke` only calls the live
 Site Manager API when `UNIFI_SM_API_KEY` is set in your environment, and it is
 read-only.
 
-> **The adapter is not implemented, so enabling UniFi does nothing yet.**
-> `UNIFI_ENABLED=true` currently only exercises configuration validation — no
-> UniFi request is made and no data is fetched. Setting it will not make
-> `/sites` work.
+> **The adapter is implemented but not yet wired into the API.**
+> `apps/api/internal/unifi` exposes both read-only transports behind the
+> `unifi.Client` interface (Site Manager cloud and per-console Connector
+> Proxy). The sync worker that consumes it lands in ZENI-14, so enabling UniFi
+> still makes no request at startup and `/sites` does not respond yet.
 > Note also that `UNIFI_MODE=local` requires `UNIFI_LOCAL_URL` to be set even
-> while the adapter is disabled, so leaving the default `cloud` mode is easier
+> while the adapter is unwired, so leaving the default `cloud` mode is easier
 > for local work.
 
 ## Repository layout
@@ -114,8 +116,8 @@ apps/api          Go modular monolith (single binary)
     api           HTTP transport, error model, health endpoints
     config        env/secret reading + validation (the only place that reads env)
     observability structured logging, redaction
-    unifi         the ONLY package that talks to UniFi (interface + domain
-                  types only; no HTTP client yet)
+    unifi         the ONLY package that talks to UniFi (read-only client:
+                  cloud + console transports, interface + domain types)
     inventory     local cache + sync worker        (schema exists, code pending)
     identity      operators, sessions, RBAC        (code pending)
     audit         append-only action trail         (schema exists, code pending)

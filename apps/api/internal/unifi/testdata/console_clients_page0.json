@@ -1,0 +1,10 @@
+{
+  "offset": 0,
+  "limit": 2,
+  "count": 2,
+  "totalCount": 3,
+  "data": [
+    {"type": "WIRELESS", "id": "client-1", "name": "laptop-1", "connectedAt": "2026-09-14T02:06:45Z", "ipAddress": "10.0.0.50", "macAddress": "aa:bb:cc:00:00:10", "uplinkDeviceId": "cdev-1", "access": {"type": "DEFAULT"}},
+    {"type": "WIRED", "id": "client-2", "name": "nvr", "connectedAt": "2026-09-10T20:27:13Z", "ipAddress": "10.0.0.51", "macAddress": "aa:bb:cc:00:00:11", "uplinkDeviceId": "cdev-2", "access": {"type": "DEFAULT"}}
+  ]
+}

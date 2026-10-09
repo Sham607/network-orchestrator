@@ -1,0 +1,8 @@
+{
+  "httpStatusCode": 200,
+  "traceId": "trace-sites",
+  "data": [
+    {"siteId": "site-1", "hostId": "console-1", "isOwner": true, "meta": {"desc": "Default", "name": "default", "timezone": "Asia/Jakarta"}},
+    {"siteId": "site-2", "hostId": "console-2", "isOwner": false, "meta": {"desc": "Branch", "name": "branch", "timezone": "Asia/Jakarta"}}
+  ]
+}

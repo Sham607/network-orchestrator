@@ -1,0 +1,7 @@
+{
+  "httpStatusCode": 200,
+  "traceId": "trace-sites",
+  "data": [
+    {"hostId": "console-1", "meta": {"name": "default"}}
+  ]
+}

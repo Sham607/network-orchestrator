@@ -1,0 +1,9 @@
+{
+  "offset": 2,
+  "limit": 2,
+  "count": 1,
+  "totalCount": 3,
+  "data": [
+    {"type": "WIRELESS", "id": "client-3", "name": "phone-1", "connectedAt": "2026-10-01T10:00:00Z", "ipAddress": "10.0.0.52", "macAddress": "aa:bb:cc:00:00:12", "uplinkDeviceId": "cdev-1", "access": {"type": "DEFAULT"}}
+  ]
+}

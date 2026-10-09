@@ -1,0 +1,8 @@
+{
+  "httpStatusCode": 200,
+  "traceId": "trace-hosts",
+  "data": [
+    {"id": "console-1", "hardwareId": "hw-1", "type": "console", "ipAddress": "10.0.0.1", "userData": {"fullName": "UniFi User"}},
+    {"id": "console-2", "hardwareId": "hw-2", "type": "console", "ipAddress": "10.0.1.1", "userData": {"fullName": "UniFi User"}}
+  ]
+}

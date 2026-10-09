@@ -3,11 +3,12 @@
 #
 # Phase 1 (always, no secrets required): build the API, start it, and assert
 #   the liveness endpoint returns 200 with a request-id header.
-# Phase 2 (optional): if UNIFI_SM_API_KEY is set, make ONE read-only call to the
-#   Site Manager API and assert the response carries a `data` field. This is the
-#   "safe real check" for local use; CI never sets the key, so CI stays green
-#   without credentials. The exact endpoint belongs to ADR-001 (ZENI-2); the
-#   base URL is overridable for that reason.
+# Phase 2 (optional): if UNIFI_SM_API_KEY is set, run the adapter's live
+#   read-only test (build tag `live`) against the real Site Manager API and, when
+#   UNIFI_CONSOLE_ID is also set, the per-console Connector Proxy. This exercises
+#   the shipped code path instead of a hand-rolled curl. CI never sets the key
+#   and never builds with `-tags live`, so CI stays green without credentials.
+#   Base URLs are overridable: UNIFI_SM_BASE_URL, UNIFI_CONSOLE_ID.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -57,9 +58,8 @@ if [ -z "${UNIFI_SM_API_KEY:-}" ]; then
 fi
 
 sm_base="${UNIFI_SM_BASE_URL:-https://api.ui.com}"
-sm_resp="$(curl -fsS -H "X-API-KEY: ${UNIFI_SM_API_KEY}" -H 'Accept: application/json' "${sm_base}/v1/hosts")" || {
-  echo "FAIL: Site Manager /v1/hosts request failed"
+UNIFI_SM_BASE_URL="$sm_base" go test -tags live -count=1 -run TestLiveReadOnly -v ./apps/api/internal/unifi/ || {
+  echo "FAIL: live read-only check against $sm_base failed"
   exit 1
 }
-grep -q '"data"' <<<"$sm_resp" || { echo "FAIL: Site Manager response has no data field"; exit 1; }
-echo "OK: Site Manager read-only call returned data."
+echo "OK: live read-only check passed."
