@@ -6,7 +6,7 @@
 SHELL := /usr/bin/env bash
 .DEFAULT_GOAL := help
 
-.PHONY: help bootstrap check lint test build smoke secrets imports openapi web up down clean
+.PHONY: help bootstrap check lint typecheck test test-web build smoke secrets imports openapi openapi-types web up down clean
 
 help: ## Show available targets
 	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -16,15 +16,21 @@ bootstrap: ## Install dependencies for API and web
 	go mod download
 	cd apps/web && npm ci
 
-check: lint test imports secrets openapi ## Run everything CI runs
+check: lint typecheck test test-web imports secrets openapi openapi-types ## Run everything CI runs
 
 lint: ## Format check + go vet + web eslint
 	@test -z "$$(gofmt -l apps/api)" || { echo "gofmt found unformatted files:"; gofmt -l apps/api; exit 1; }
 	go vet ./apps/api/...
 	cd apps/web && npm run lint
 
+typecheck: ## TypeScript typecheck for the web app
+	cd apps/web && npm run typecheck
+
 test: ## Go unit tests
 	go test ./apps/api/...
+
+test-web: ## Web component tests (Vitest)
+	cd apps/web && npm run test
 
 build: ## Build API binary and web bundle
 	go build -o apps/api/bin/api ./apps/api/cmd/api
@@ -38,6 +44,9 @@ secrets: ## Scan tracked files for secrets and TLS bypasses
 
 openapi: ## Validate the OpenAPI contract
 	npx --yes @redocly/cli@1 lint openapi/openapi.yaml
+
+openapi-types: ## Fail when the generated web API types drift from the contract
+	./scripts/check-openapi-types.sh
 
 smoke: ## End-to-end smoke test (no secrets required)
 	./scripts/smoke.sh

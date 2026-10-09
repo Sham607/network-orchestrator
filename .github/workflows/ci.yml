@@ -36,7 +36,7 @@ jobs:
         run: ./scripts/check-imports.sh
 
   web:
-    name: web (lint, build)
+    name: web (lint, typecheck, test, build, contract)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -45,12 +45,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # jsdom 30 (a Vitest dependency here) declares
+          # engines.node ^22.22.2 || ^24.15.0 || >=26.0.0, so the suite cannot
+          # even collect on Node 20: it dies with
+          # "TypeError: webidl.util.markAsUncloneable is not a function" and
+          # reports 0 tests run. Node 20 is also EOL and the runner already
+          # warns about it. 22 is the oldest version the toolchain supports.
+          node-version: 22
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
       - run: npm run build
+      - name: generated API types match openapi/openapi.yaml
+        run: npm run openapi:check
 
   openapi:
     name: openapi contract

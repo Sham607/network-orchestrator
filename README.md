@@ -60,10 +60,12 @@ database and start over, use `docker compose down -v`.
 
 ```bash
 make test      # Go unit tests
+make test-web  # Web component tests (Vitest)
 make build     # API binary + web bundle
 make smoke     # build + start the API + assert liveness/readiness behaviour
 make web       # Vite dev server on :5173, proxies /api to :8080
-make check     # lint, test, import boundaries, secret scan, OpenAPI lint
+make check     # lint, typecheck, both test suites, import boundaries, secret
+               # scan, OpenAPI lint, generated-type drift
 ```
 
 `make check` does **not** cover everything CI runs — CI additionally runs
@@ -178,6 +180,36 @@ look at Postgres or at UniFi. The database is checked first, so a simultaneous
 outage is always reported as `service_unavailable`. With `UNIFI_ENABLED=false`
 there is no cache to be stale and the probe stays a database check.
 
+## Web dashboard
+
+`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Its first
+vertical slice is implemented: a sites view (`/sites`) and a devices view
+(`/devices`), both built against `openapi/openapi.yaml`.
+
+- **Types come from the contract.** `apps/web/src/api/schema.d.ts` is generated
+  by `openapi-typescript` and committed; `npm run openapi:check` (and `make
+  openapi-types` in CI) fails when it drifts from the contract. `src/api/types.ts`
+  only aliases the generated types, so no API type is maintained twice.
+- **Honest states.** `/sites` and `/devices` are served from the local cache (ZENI-15).
+  The views render the API's `{ code, message, details }` verbatim — `request_id`
+  included — and say plainly when a 404 means "contract-only, not served yet", so
+  the UI stays truthful against a build that does not serve them. No fabricated
+  rows, no endless spinner.
+- **Filtering is server-side.** The devices view sends `site_id`, `status`,
+  `page` and `page_size`; the browser never downloads the inventory to filter it.
+- **Read-only.** There is no write UI. The phase-1 action endpoints carry
+  `x-status: proposed-gated` in the contract and are not registered by the API at
+  all yet, so they answer 404 today; the contract documents `403 forbidden` with
+  `details.reason: write_disabled` for the state where they are enabled. Nothing
+  under `apps/web` can reach either one.
+- **The browser never touches UniFi.** Every call goes to our own `/api/v1`
+  (same-origin; Vite proxies it to `:8080` in dev), and no UniFi credential or
+  controller URL appears anywhere under `apps/web`.
+
+Tests are component-level (Vitest + Testing Library) and cover the three states
+that matter: populated list, empty list, and API error (404 and 503). Run them
+with `make test-web`.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on every push to `main` and every PR:
@@ -185,7 +217,7 @@ there is no cache to be stale and the probe stays a database check.
 | Job | Checks |
 |---|---|
 | `api` | `gofmt`, `go vet`, `go build`, `go test`, import boundaries |
-| `web` | `npm ci`, eslint, `tsc` + Vite build |
+| `web` | `npm ci`, eslint, `tsc`, Vitest, Vite build, generated-type drift against `openapi/openapi.yaml` |
 | `openapi` | Redocly lint of `openapi/openapi.yaml` |
 | `secrets` | `scripts/check-secrets.sh` — high-confidence secrets and TLS bypasses |
 | `smoke` | build the API, start it, assert liveness + clean readiness degradation |

@@ -1,30 +1,54 @@
-import { useEffect, useState } from 'react'
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
-type Health = { status: string; time: string }
+import DevicesPage from './pages/DevicesPage'
+import SitesPage from './pages/SitesPage'
 
-// Bootstrap placeholder: proves the SPA reaches the API through the same-origin
-// /api path and renders a response. The real dashboard (tables, topology,
-// charts) is built against the OpenAPI contract in openapi/openapi.yaml.
+/**
+ * Application shell and routes.
+ *
+ * Only the two read-only views of the first vertical slice are routed. There is
+ * deliberately no write UI: the write endpoints are gated off in phase 1
+ * (`403 write_disabled`).
+ */
 export default function App() {
-  const [health, setHealth] = useState<Health | null>(null)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    fetch('/api/v1/health')
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`unexpected status ${res.status}`)
-        return (await res.json()) as Health
-      })
-      .then(setHealth)
-      .catch((err: unknown) => setError(String(err)))
-  }, [])
-
   return (
-    <main>
-      <h1>Network Orchestrator</h1>
-      {error && <p role="alert">API unreachable: {error}</p>}
-      {health && <p>API health: {health.status}</p>}
-      {!health && !error && <p>Checking API…</p>}
-    </main>
+    <>
+      <a className="skip-link" href="#main">
+        Skip to content
+      </a>
+
+      <header className="app-header">
+        <p className="app-title">Network Orchestrator</p>
+        <nav aria-label="Primary">
+          <NavLink to="/sites">Sites</NavLink>
+          <NavLink to="/devices">Devices</NavLink>
+        </nav>
+      </header>
+
+      <main id="main">
+        <Routes>
+          <Route path="/" element={<Navigate to="/sites" replace />} />
+          <Route path="/sites" element={<SitesPage />} />
+          <Route path="/devices" element={<DevicesPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </main>
+
+      <footer className="app-footer">
+        Read-only view of the cache. Data comes from our own API (<code>/api/v1</code>); the browser
+        never talks to the UniFi controller.
+      </footer>
+    </>
+  )
+}
+
+function NotFoundPage() {
+  return (
+    <section aria-labelledby="not-found-heading">
+      <h2 id="not-found-heading">Page not found</h2>
+      <p>
+        Use the navigation above to reach the sites or devices view.
+      </p>
+    </section>
   )
 }
