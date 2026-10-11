@@ -4,18 +4,29 @@ Internal control plane for the office UniFi ecosystem: read network state,
 cache it in Postgres, and expose it to an operator dashboard. Single-tenant,
 runs on one Linux host in the office network.
 
-**Status: foundation decided, product not implemented.** In the repository and
+**Status: phase 1, read path deployed — writes and operator auth are not.** In
+the repository and
 agreed: the stack (ADR-002), module boundaries and credential model (ADR-003),
 the UniFi access path (ADR-001), the phase-1 schema (`migrations/0001_init.sql`)
 and the phase-1 API contract (`openapi/openapi.yaml`).
 
 Implemented in code: configuration loading and validation, structured logging,
 the error model, the read-only UniFi adapter (both transports), the inventory
-sync worker with its Postgres cache and audit trail, and **three probe
-endpoints**. Not implemented: operator auth and every resource endpoint. The
-contract describes them; the code does not
+sync worker with its Postgres cache and audit trail, the three probe endpoints,
+and the cache-backed read endpoints (`sites`, `devices`, `clients`). Not
+implemented: operator auth, site/device detail, networks, and every real write.
+The contract describes them; the code does not
 serve them. See
 [API surface](#api-surface) for exactly what responds today.
+
+Two consequences worth knowing before you point anything at this build:
+
+- **The cache read endpoints are unauthenticated** until operator auth lands.
+  Keep the API on the office LAN or VPN; do not expose it to the internet.
+- **A client list only has rows when the surface can read clients.** The cloud
+  surface serves no clients at all (ADR-001), so with the default
+  `UNIFI_MODE=cloud`, `GET /api/v1/clients` is a well-formed empty page. Real
+  client rows need `UNIFI_MODE=local` on the office LAN/VPN.
 
 ---
 
@@ -37,11 +48,15 @@ cd network-orchestrator
 cp .env.example .env      # local values only; never commit .env
 make bootstrap            # go mod download + npm ci
 
-make up                   # docker compose: API (:8080) + Postgres (:5432)
-
-# Apply the schema. "make up" does NOT run migrations — without this step the
-# database stays empty and goose_db_version never appears.
+# Start Postgres and apply the schema BEFORE the API. "make up" does not run
+# migrations, and the sync worker starts polling the moment the API is up: start
+# it against an empty database and the first cycle fails on every site
+# ("relation sites does not exist") and records a partial run, which only clears
+# on the next tick.
+docker compose up -d db   # Postgres only (:5432)
 make migrate              # runs goose migrations against local Postgres
+
+make up                   # API (:8080) + Postgres, now against a live schema
 
 # Expect: {"status":"ok",...} with HTTP 200
 curl -s localhost:8080/api/v1/health
@@ -162,12 +177,16 @@ parallel (`openapi/mock-expectations.md`).
 | `GET /api/v1/sites/{id}` | One site. | Contract only — returns 404 |
 | `GET /api/v1/devices` | APs, switches, gateways from the cache (filter by site/status/type/mac), paged and sorted. | **Served** |
 | `GET /api/v1/devices/{id}` | One device. | Contract only — returns 404 |
-| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | Contract only — returns 404 |
+| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | **Served** |
 | `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | Contract only — returns 404 |
-| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | Contract only — returns 404 |
+| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | **Served** as a stub: rejects before reading the body and never touches UniFi |
 
-Every error uses one shape: `{ "code", "message", "details" }`, where `code` is
-stable and machine-readable. See `openapi/openapi.yaml`.
+Every registered route answers an error with one shape: `{ "code", "message",
+"details" }`, where `code` is stable and machine-readable. A route that is not
+registered yet — every row marked *contract only* — falls through to the
+router's plain `404 page not found`, which is deliberately **not** the contract
+shape: the dashboard uses exactly that difference to say "not served yet"
+instead of inventing an error it did not receive. See `openapi/openapi.yaml`.
 
 ### Readiness failure semantics
 
@@ -197,8 +216,8 @@ views are implemented: sites (`/sites`), devices (`/devices`) and clients
   by `openapi-typescript` and committed; `npm run openapi:check` (and `make
   openapi-types` in CI) fails when it drifts from the contract. `src/api/types.ts`
   only aliases the generated types, so no API type is maintained twice.
-- **Honest states.** `/sites`, `/devices` and `/clients` are served from the
-  local cache (ZENI-15; `/clients` lands with the sync worker in ZENI-23).
+- **Honest states.** `/sites`, `/devices` and `/clients` are all served from the
+  local cache today (ZENI-15; `/clients` landed with the sync worker in ZENI-23).
   The views render the API's `{ code, message, details }` verbatim — `request_id`
   included — and say plainly when a 404 means "contract-only, not served yet", so
   the UI stays truthful against a build that does not serve them. No fabricated
@@ -267,6 +286,10 @@ red→green evidence.
   has a `Redacted()` view for diagnostics.
 - UniFi write operations are out of scope for phase 1 and, when added, need an
   explicit `admin` role, CSRF token, rate limit, and an audit entry.
+- The cache read endpoints (`sites`, `devices`, `clients`) carry **no
+  authentication** until operator auth is implemented: nothing checks a session
+  or a role. Treat any deployment as LAN/VPN-only and never publish it. This is
+  a known phase-1 gap, not a configuration mistake.
 
 ## Branch protection
 

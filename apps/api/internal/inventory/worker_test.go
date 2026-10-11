@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/unifi"
 )
@@ -304,6 +306,51 @@ func TestRunCycleKeepsPartialSitesWhenOneFails(t *testing.T) {
 	}
 	if h.worker.Status().ConsecutiveFailures != 0 {
 		t.Fatal("a partial cycle means the controller answered; failures must not accumulate")
+	}
+
+	// A partial cycle has to name the site and the cause somewhere. The run
+	// record is sanitized on purpose, so that somewhere is the log.
+	logged := h.logs.String()
+	if !strings.Contains(logged, "sync: site failed") {
+		t.Fatalf("no per-site failure logged; log was:\n%s", logged)
+	}
+	for _, want := range []string{"site_id=site-2", "site write failed"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("log does not mention %q; log was:\n%s", want, logged)
+		}
+	}
+	if strings.Contains(logged, "site_id=site-1") {
+		t.Fatalf("the site that succeeded must not be logged as failed; log was:\n%s", logged)
+	}
+}
+
+func TestClassifyKeepsTheSQLStateAndDropsTheDriverText(t *testing.T) {
+	serverText := `relation "clients" does not exist`
+	pgErr := &pgconn.PgError{Code: "42P01", Message: serverText}
+
+	kind, message := classify(fmt.Errorf("inventory: upsert site: %w", pgErr))
+
+	if kind != errKindInternal {
+		t.Fatalf("kind = %q, want %q", kind, errKindInternal)
+	}
+	if message != "database error (SQLSTATE 42P01)" {
+		t.Fatalf("message = %q, want the SQLSTATE form", message)
+	}
+	// The code is safe to persist; the server text is not guaranteed to be, and
+	// it may carry row values. It stays out of the record.
+	if strings.Contains(message, serverText) {
+		t.Fatalf("message echoed driver text: %q", message)
+	}
+}
+
+func TestClassifyLeavesNonDatabaseInternalsOpaque(t *testing.T) {
+	kind, message := classify(errors.New("dial tcp 10.0.0.5:8080: connect: connection refused"))
+
+	if kind != errKindInternal {
+		t.Fatalf("kind = %q, want %q", kind, errKindInternal)
+	}
+	if message != "sync cycle failed: internal error" {
+		t.Fatalf("message = %q, want the opaque form", message)
 	}
 }
 

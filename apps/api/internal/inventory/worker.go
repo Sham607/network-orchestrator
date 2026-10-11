@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/unifi"
 )
@@ -200,6 +202,15 @@ func (w *Worker) runCycle(ctx context.Context, trigger string) SyncRun {
 		}
 		if err != nil {
 			run.SitesFailed++
+			// The recorded run carries only the first, sanitized cause, so a
+			// partial cycle used to say "14 sites failed" and nothing else. The
+			// structured log is where the real error belongs (ZENI-23 deploy
+			// verification): the site and the cause have to be in the same line.
+			w.cfg.Logger.Warn("sync: site failed",
+				"site_id", site.ID,
+				"site_name", site.Name,
+				"error", err,
+			)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -385,10 +396,20 @@ func (w *Worker) errorKind() string {
 // classify maps an error onto the sync_runs.error_kind vocabulary. Adapter
 // messages are sanitized by construction (internal/unifi); our own errors are
 // never echoed because they can carry connection details.
+//
+// A Postgres SQLSTATE is the one thing worth keeping: it names neither a host,
+// a user nor a credential, and the driver text that would leak those is still
+// dropped. Without it, an unmigrated database, a missing table and a dead
+// connection all persist as the same unactionable "internal error" — which is
+// exactly what the first deploy of this stack recorded.
 func classify(err error) (kind, message string) {
 	var uerr *unifi.Error
 	if errors.As(err, &uerr) {
 		return string(uerr.Kind), uerr.Message
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return errKindInternal, "database error (SQLSTATE " + pgErr.Code + ")"
 	}
 	return errKindInternal, "sync cycle failed: internal error"
 }
