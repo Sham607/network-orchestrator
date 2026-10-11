@@ -24,7 +24,7 @@ line. A decision that changes gets a new ADR that supersedes the old one.
 | Readiness failure is `503 service_unavailable` (ADR-004) | `apps/api/internal/api/errors.go`, `scripts/smoke.sh` |
 | Readiness hanya menyebut dependensi yang benar-benar rusak berdasarkan bukti (ADR-007) | `handleReady` di `apps/api/internal/api/router.go`, `inventory.ErrKindInternal`, dipaku `apps/api/internal/api/router_test.go` dan `tests/e2e/degradation_test.go` |
 | Fase 1 read-only terhadap UniFi (ADR-006) | hanya route `GET` yang didaftarkan di `apps/api/internal/api/router.go`; dijaga `apps/api/internal/api/routes_test.go` dan `tests/e2e/readonly_test.go` |
-| Riwayat `client_events` dibatasi 30 hari (ADR-005) | **belum ada** — fitur presence klien (FR-3) belum dibangun, jadi belum ada baris yang dipangkas. Job pemangkasannya menyusul bersama FR-3. |
+| Riwayat `client_events` dibatasi 30 hari (ADR-005) | `apps/api/internal/inventory/prune.go` (job terjadwal di sisi aplikasi), `PostgresRepository.DeleteClientEventsBefore`, ambang dari `CLIENT_EVENTS_RETENTION` / `CLIENT_EVENTS_PRUNE_INTERVAL` di `apps/api/internal/config`; diuji `inventory/prune_test.go` (Postgres sungguhan) dan `tests/e2e/prune_test.go` (binary + jadwal) |
 | Go 1.23 + chi + pgx, Postgres 16 (ADR-002) | `go.mod`, `docker-compose.yml` |
 | React + Vite SPA (ADR-002) | `apps/web` |
 | UniFi access lewat Connector Proxy cloud (ADR-001) | `apps/api/internal/unifi`, `UNIFI_SM_API_KEY` |

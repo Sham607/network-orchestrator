@@ -104,24 +104,25 @@ func run() error {
 	}
 	defer pool.Close()
 
-	// The sync worker is the only writer of the UniFi cache. It lives for the
-	// lifetime of the process and is stopped before the pool is closed, so its
-	// last cycle is still recorded.
-	workerCtx, stopWorker := context.WithCancel(context.Background())
-	var workerDone chan struct{}
+	// Background jobs share one lifetime: the sync worker — the only writer of
+	// the UniFi cache — and the client_events retention job. Both are stopped
+	// before the pool they write through is closed, so a cancelled sync cycle
+	// still records its sync_run.
+	//
+	// The stopper is registered before anything can fail, so every path out of
+	// this function stops the jobs before the pool they use is closed.
+	jobCtx, stopJobs := context.WithCancel(context.Background())
+	var jobDone []chan struct{}
 	var syncStatus api.SyncStatusSource
 
-	// Registered before anything can fail, so every path stops the worker
-	// before the pool it writes through is closed.
 	defer func() {
-		stopWorker()
-		if workerDone == nil {
-			return
-		}
-		select {
-		case <-workerDone:
-		case <-time.After(10 * time.Second):
-			logger.Warn("sync worker did not stop within 10s", "module", "inventory")
+		stopJobs()
+		for _, done := range jobDone {
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				logger.Warn("a background job did not stop within 10s", "module", "inventory")
+			}
 		}
 	}()
 
@@ -145,16 +146,38 @@ func run() error {
 			SiteAllowlist: cfg.SyncSiteAllowlist,
 		})
 		syncStatus = worker
-		workerDone = make(chan struct{})
+		done := make(chan struct{})
+		jobDone = append(jobDone, done)
 		go func() {
-			defer close(workerDone)
-			if err := worker.Run(workerCtx); err != nil {
+			defer close(done)
+			if err := worker.Run(jobCtx); err != nil {
 				logger.Error("sync worker stopped", "module", "inventory", "error", err)
 			}
 		}()
 		logger.Info("sync worker started", "module", "inventory",
 			"surface", surfaceName(cfg), "interval", cfg.SyncInterval.String())
 	}
+
+	// The retention job is the only deleter of client_events (ADR-005). It runs
+	// whether or not UniFi is enabled, because it never talks to a controller —
+	// it deletes from our own database, which is not an operation on UniFi and
+	// does not cross the phase-1 read-only boundary (ADR-006).
+	pruner := inventory.NewPruner(inventory.PrunerConfig{
+		Repo:      repo,
+		Logger:    logger,
+		Retention: cfg.ClientEventsRetention,
+		Interval:  cfg.ClientEventsPruneInterval,
+	})
+	prunerDone := make(chan struct{})
+	jobDone = append(jobDone, prunerDone)
+	go func() {
+		defer close(prunerDone)
+		if err := pruner.Run(jobCtx); err != nil {
+			logger.Error("retention job stopped", "module", "inventory", "error", err)
+		}
+	}()
+	logger.Info("client_events retention job started", "module", "inventory",
+		"retention", cfg.ClientEventsRetention.String(), "interval", cfg.ClientEventsPruneInterval.String())
 
 	handler := api.NewRouter(api.Dependencies{
 		Config:    cfg,
@@ -194,7 +217,7 @@ func run() error {
 				continue
 			}
 			logger.Info("shutting down", "signal", sig.String())
-			stopWorker()
+			stopJobs()
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			return srv.Shutdown(ctx)

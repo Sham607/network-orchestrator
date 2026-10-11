@@ -8,8 +8,9 @@ the dashboard in a real browser (`apps/web/e2e`, Playwright).
 Two properties are structural, not conventions:
 
 - **It cannot reach UniFi.** Every stack is launched with a scrubbed
-  environment (`cleanEnv` strips inherited `UNIFI_*`, `DATABASE_URL`, `HTTP_ADDR`,
-  `APP_ENV`, `LOG_LEVEL`, `SYNC_*`) and, when UniFi is enabled, is pointed at a
+  environment (`cleanEnv` strips inherited `UNIFI_*`, `CLIENT_EVENTS_*`,
+  `DATABASE_URL`, `HTTP_ADDR`, `APP_ENV`, `LOG_LEVEL`, `SYNC_*`) and, when UniFi
+  is enabled, is pointed at a
   loopback `httptest` server. The mock also counts requests and can be driven
   offline or slow, so "the harness never touched UniFi" is asserted, not assumed.
 - **It carries no credential.** The fixture credential is the 11-character
@@ -71,6 +72,7 @@ PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium make e2e-web
 | Degradation · healthy → offline | fresh 200 first; once the cache ages past `SYNC_STALE_AFTER`, the documented 503 appears and `/health` stays 200 | `TestControllerGoingOfflineMakesTheCacheStale` |
 | Read-only · route table | the `chi` route inventory is exactly the five GET routes (unit test, `apps/api/internal/api`) | `TestRouterRegistersOnlyReadRoutes` |
 | Read-only · over HTTP | the gated action routes reject writes, and no write verb is accepted on any route | `TestWriteActionRoutesRejectWrites`, `TestNoWriteMethodIsAccepted` |
+| Retention (ADR-005) | with a 1h window and a 1s schedule, rows seeded after boot that are older than the window disappear, the newer row and `audit_log` stay, and the run logs `rows_deleted` | `TestClientEventsRetentionPrunesOnSchedule` |
 
 ## Test matrix — dashboard (Playwright, Chromium)
 

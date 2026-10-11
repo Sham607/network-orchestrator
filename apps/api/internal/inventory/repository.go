@@ -145,6 +145,14 @@ WHERE status IN ('success', 'partial') AND finished_at IS NOT NULL
 ORDER BY finished_at DESC
 LIMIT 1`
 
+const selectSiteIDs = `
+SELECT id::text
+FROM sites`
+
+const deleteClientEventsBefore = `
+DELETE FROM client_events
+WHERE site_id = $1::uuid AND occurred_at < $2`
+
 // ApplySite upserts the site and every child row it carries.
 func (r *PostgresRepository) ApplySite(ctx context.Context, snap SiteSnapshot) error {
 	site := snap.Site
@@ -295,6 +303,59 @@ func (r *PostgresRepository) RecordSyncRun(ctx context.Context, run SyncRun) (st
 		return "", fmt.Errorf("inventory: insert sync_run: %w", err)
 	}
 	return id, nil
+}
+
+// DeleteClientEventsBefore deletes every client_events row older than cutoff and
+// reports how many rows it removed (ADR-005).
+//
+// It deletes per site instead of running one global predicate, because
+// client_events has no index led by occurred_at. The existing
+// client_events_site_time_idx (site_id, occurred_at DESC) matches
+// `site_id = $1 AND occurred_at < $2` exactly — equality on the leading column,
+// range on the second — so each statement is driven by an index scan that
+// touches only the rows it is about to remove. The alternative, adding an index
+// on occurred_at, would buy a single statement and pay for it with a permanent
+// extra btree on the only unbounded append-only table plus a schema change on a
+// live table. At this fleet size the loop costs a handful of statements per
+// run; revisit if the site count grows by orders of magnitude (see the
+// re-evaluation triggers on ZENI-21).
+//
+// Deleting is not atomic across sites: a failure part way through leaves the
+// sites already processed pruned and returns the rows it did delete along with
+// the first error. That is safe and bounded by the threshold predicate, which
+// every statement carries, so no path deletes more than the retention window.
+func (r *PostgresRepository) DeleteClientEventsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	rows, err := r.pool.Query(ctx, selectSiteIDs)
+	if err != nil {
+		return 0, fmt.Errorf("inventory: list sites for retention: %w", err)
+	}
+	var siteIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("inventory: scan site id: %w", err)
+		}
+		siteIDs = append(siteIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("inventory: iterate sites: %w", err)
+	}
+
+	var deleted int64
+	var firstErr error
+	for _, siteID := range siteIDs {
+		tag, err := r.pool.Exec(ctx, deleteClientEventsBefore, siteID, cutoff)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("inventory: prune client_events for site %s: %w", siteID, err)
+			}
+			continue
+		}
+		deleted += tag.RowsAffected()
+	}
+	return deleted, firstErr
 }
 
 // LastSuccessfulSyncAt reports the freshness anchor for /ready.

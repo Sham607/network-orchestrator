@@ -61,6 +61,13 @@ type Config struct {
 	// (by unifi_site_id or site name). Comma-separated. When empty, all sites are synced.
 	SyncSiteAllowlist []string
 
+	// ClientEventsRetention is the ADR-005 history window for client_events:
+	// rows older than this are deleted by the retention job.
+	// ClientEventsPruneInterval is how often that job runs. Both are settings,
+	// not constants scattered through the code.
+	ClientEventsRetention     time.Duration
+	ClientEventsPruneInterval time.Duration
+
 	// AdminBootstrapPassword, when set, is used once to seed the first admin
 	// on an empty database. It is a secret and must never be committed.
 	AdminBootstrapPassword string
@@ -69,18 +76,20 @@ type Config struct {
 // Redacted returns a copy safe to log: every secret field is replaced.
 func (c Config) Redacted() map[string]any {
 	return map[string]any{
-		"app_env":             c.AppEnv,
-		"http_addr":           c.HTTPAddr,
-		"log_level":           c.LogLevel.String(),
-		"unifi_enabled":       c.UnifiEnabled,
-		"unifi_mode":          string(c.UnifiMode),
-		"sync_interval":       c.SyncInterval.String(),
-		"stale_after":         c.SyncStaleAfter.String(),
-		"sync_site_allowlist": c.SyncSiteAllowlist,
-		"database_url":        redactURL(c.DatabaseURL),
-		"sm_api_key":          redactSecret(c.UnifiSMAPIKey),
-		"local_api_key":       redactSecret(c.UnifiLocalAPIKey),
-		"admin_password":      redactSecret(c.AdminBootstrapPassword),
+		"app_env":                      c.AppEnv,
+		"http_addr":                    c.HTTPAddr,
+		"log_level":                    c.LogLevel.String(),
+		"unifi_enabled":                c.UnifiEnabled,
+		"unifi_mode":                   string(c.UnifiMode),
+		"sync_interval":                c.SyncInterval.String(),
+		"stale_after":                  c.SyncStaleAfter.String(),
+		"sync_site_allowlist":          c.SyncSiteAllowlist,
+		"client_events_retention":      c.ClientEventsRetention.String(),
+		"client_events_prune_interval": c.ClientEventsPruneInterval.String(),
+		"database_url":                 redactURL(c.DatabaseURL),
+		"sm_api_key":                   redactSecret(c.UnifiSMAPIKey),
+		"local_api_key":                redactSecret(c.UnifiLocalAPIKey),
+		"admin_password":               redactSecret(c.AdminBootstrapPassword),
 	}
 }
 
@@ -130,6 +139,16 @@ func Load() (Config, error) {
 	}
 	if cfg.SyncStaleAfter > 0 && cfg.SyncInterval > 0 && cfg.SyncStaleAfter <= cfg.SyncInterval {
 		errs = append(errs, fmt.Errorf("SYNC_STALE_AFTER (%s) must be greater than SYNC_INTERVAL (%s)", cfg.SyncStaleAfter, cfg.SyncInterval))
+	}
+
+	// ADR-005: the window defaults to 30 days, so a deployment that configures
+	// nothing keeps 30 days of history — rather than pruning everything away or
+	// keeping it forever.
+	if cfg.ClientEventsRetention, err = parseDuration("CLIENT_EVENTS_RETENTION", "720h"); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.ClientEventsPruneInterval, err = parseDuration("CLIENT_EVENTS_PRUNE_INTERVAL", "1h"); err != nil {
+		errs = append(errs, err)
 	}
 
 	switch cfg.UnifiMode {

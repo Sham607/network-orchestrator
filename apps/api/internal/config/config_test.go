@@ -117,3 +117,54 @@ func TestLoadSyncSiteAllowlist(t *testing.T) {
 		t.Errorf("SyncSiteAllowlist = %v", cfg.SyncSiteAllowlist)
 	}
 }
+
+// ADR-005: the 30-day window is a setting with a safe default, so a deployment
+// that configures nothing keeps 30 days rather than pruning everything or
+// keeping forever.
+func TestClientEventsRetentionDefaultsToThirtyDays(t *testing.T) {
+	setEnv(t, map[string]string{
+		"DATABASE_URL": "postgres://u:p@localhost:5432/db",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.ClientEventsRetention != 30*24*time.Hour {
+		t.Errorf("ClientEventsRetention = %s, want 720h (30 days)", cfg.ClientEventsRetention)
+	}
+	if cfg.ClientEventsPruneInterval != time.Hour {
+		t.Errorf("ClientEventsPruneInterval = %s, want 1h", cfg.ClientEventsPruneInterval)
+	}
+}
+
+func TestClientEventsRetentionIsConfigurable(t *testing.T) {
+	setEnv(t, map[string]string{
+		"DATABASE_URL":                 "postgres://u:p@localhost:5432/db",
+		"CLIENT_EVENTS_RETENTION":      "168h",
+		"CLIENT_EVENTS_PRUNE_INTERVAL": "15m",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.ClientEventsRetention != 168*time.Hour {
+		t.Errorf("ClientEventsRetention = %s, want 168h", cfg.ClientEventsRetention)
+	}
+	if cfg.ClientEventsPruneInterval != 15*time.Minute {
+		t.Errorf("ClientEventsPruneInterval = %s, want 15m", cfg.ClientEventsPruneInterval)
+	}
+}
+
+func TestClientEventsRetentionRejectsNonPositiveValues(t *testing.T) {
+	for _, raw := range []string{"forever", "0s", "-1h"} {
+		t.Run(raw, func(t *testing.T) {
+			setEnv(t, map[string]string{
+				"DATABASE_URL":            "postgres://u:p@localhost:5432/db",
+				"CLIENT_EVENTS_RETENTION": raw,
+			})
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CLIENT_EVENTS_RETENTION") {
+				t.Fatalf("expected a CLIENT_EVENTS_RETENTION error for %q, got %v", raw, err)
+			}
+		})
+	}
+}

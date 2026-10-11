@@ -44,6 +44,29 @@ type stackOptions struct {
 	databaseURL string
 	interval    time.Duration
 	staleAfter  time.Duration
+	// extraEnv overrides the settings above, for tests that need a knob the
+	// harness does not otherwise expose (e.g. CLIENT_EVENTS_RETENTION). The
+	// entries are applied on top of the defaults, not appended next to them.
+	extraEnv map[string]string
+}
+
+// syncBuffer collects a child process's output and can be read while that
+// process is still writing to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // stack owns a running API process plus its mock controller.
@@ -52,7 +75,7 @@ type stack struct {
 	baseURL string
 	mock    *mockUnifi
 	cmd     *exec.Cmd
-	logs    *bytes.Buffer
+	logs    *syncBuffer
 	client  *http.Client
 }
 
@@ -110,13 +133,19 @@ func startStack(t *testing.T, opts stackOptions) *stack {
 		settings["UNIFI_LOCAL_API_KEY"] = e2eUnifiKey
 		settings["UNIFI_CONSOLE_ID"] = "console-e2e"
 	}
+	// Overrides go into the map, not next to it: the process reads the first
+	// matching entry from its environment, so a duplicate name would silently
+	// keep the default.
+	for name, value := range opts.extraEnv {
+		settings[name] = value
+	}
 
 	env := cleanEnv()
 	for name, value := range settings {
 		env = append(env, name+"="+value)
 	}
 
-	logs := &bytes.Buffer{}
+	logs := &syncBuffer{}
 	cmd := exec.Command(apiBinary)
 	cmd.Env = env
 	cmd.Stdout = logs
@@ -154,6 +183,7 @@ func cleanEnv() []string {
 		name := strings.SplitN(kv, "=", 2)[0]
 		switch {
 		case strings.HasPrefix(name, "UNIFI_"),
+			strings.HasPrefix(name, "CLIENT_EVENTS_"),
 			name == "DATABASE_URL", name == "HTTP_ADDR", name == "APP_ENV",
 			name == "LOG_LEVEL", strings.HasPrefix(name, "SYNC_"):
 			continue
