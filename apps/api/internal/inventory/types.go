@@ -32,13 +32,14 @@ const (
 // SiteSnapshot is one site with its children exactly as the adapter returned
 // them, ready to be applied as a single idempotent upsert.
 type SiteSnapshot struct {
-	Site      unifi.Site
-	ConsoleID string
-	Source    string
-	SyncedAt  time.Time
-	Devices   []unifi.Device
-	Clients   []unifi.ClientInfo
-	Networks  []unifi.Network
+	Site       unifi.Site
+	ConsoleID  string
+	Source     string
+	SyncedAt   time.Time
+	Devices    []unifi.Device
+	Clients    []unifi.ClientInfo
+	Networks   []unifi.Network
+	HasClients bool
 }
 
 // SyncRun is one sync cycle as recorded in sync_runs. ID is empty until the row

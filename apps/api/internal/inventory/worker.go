@@ -245,6 +245,7 @@ func (w *Worker) collect(ctx context.Context, site unifi.Site, at time.Time) (Si
 
 	if clients, err := w.cfg.Client.ListClients(ctx, site.ID); err == nil {
 		snap.Clients = clients
+		snap.HasClients = true
 	} else if isUnsupported(err) {
 		w.cfg.Logger.Debug("sync: surface has no clients", "site_id", site.ID)
 	} else {

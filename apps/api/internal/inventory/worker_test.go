@@ -586,3 +586,37 @@ func TestRunCycleSiteAllowlistFiltering(t *testing.T) {
 		t.Fatalf("expected only site-2 applied, got %+v", h.repo.applied)
 	}
 }
+
+func TestRunCycleCollectsClientsWhenSupported(t *testing.T) {
+	h := newHarness(t, func(client *fakeClient) {
+		client.sites = []unifi.Site{
+			{ID: "site-1", Name: "Console Site", ConsoleID: "console-1"},
+		}
+		client.devices["site-1"] = []unifi.Device{
+			{ID: "dev-1", SiteID: "site-1", MAC: "aa:bb:cc:00:00:01", Name: "U6 Pro", Type: "ap", Status: "ONLINE"},
+		}
+		client.clients["site-1"] = []unifi.ClientInfo{
+			{ID: "cli-1", SiteID: "site-1", MAC: "aa:bb:cc:11:22:33", Hostname: "phone", IP: "10.0.0.51", APID: "dev-1"},
+			{ID: "cli-2", SiteID: "site-1", MAC: "aa:bb:cc:11:22:44", Hostname: "laptop", IP: "10.0.0.52", APID: "dev-1"},
+		}
+	})
+
+	run := h.worker.runCycle(context.Background(), TriggerStartup)
+
+	if run.Status != RunSuccess {
+		t.Fatalf("status = %q, want %q (error: %s)", run.Status, RunSuccess, run.ErrorMessage)
+	}
+	if run.Clients != 2 {
+		t.Fatalf("run.Clients = %d, want 2", run.Clients)
+	}
+	if len(h.repo.applied) != 1 {
+		t.Fatalf("applied sites = %d, want 1", len(h.repo.applied))
+	}
+	snap := h.repo.applied[0]
+	if !snap.HasClients {
+		t.Fatal("expected snap.HasClients = true")
+	}
+	if len(snap.Clients) != 2 {
+		t.Fatalf("len(snap.Clients) = %d, want 2", len(snap.Clients))
+	}
+}

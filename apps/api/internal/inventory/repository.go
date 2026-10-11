@@ -75,27 +75,45 @@ ON CONFLICT (site_id, unifi_device_id) DO UPDATE SET
 // observed, not when it was last refreshed.
 const upsertClient = `
 INSERT INTO clients (
-    site_id, unifi_client_id, mac, hostname, ip_address, uplink_device_id,
-    ssid, signal_dbm, is_connected, connected_at, first_seen, last_seen,
-    source, raw, synced_at
+    site_id, unifi_client_id, mac, hostname, ip_address, client_type, access_type,
+    uplink_device_id, ssid, signal_dbm, is_connected, connected_at, first_seen,
+    last_seen, source, raw, synced_at
 ) VALUES (
-    $1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5::text, '')::inet, NULLIF($6, ''),
-    NULLIF($7, ''), $8, true, $9, $10, $10, $11, $12, $10
+    $1::uuid, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5::text, '')::inet,
+    NULLIF($6, ''), NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, ''), $10, true,
+    $11, $12, $12, $13, $14, $12
 )
 ON CONFLICT (site_id, unifi_client_id) DO UPDATE SET
     mac              = EXCLUDED.mac,
     hostname         = EXCLUDED.hostname,
     ip_address       = EXCLUDED.ip_address,
+    client_type      = EXCLUDED.client_type,
+    access_type      = EXCLUDED.access_type,
     uplink_device_id = EXCLUDED.uplink_device_id,
     ssid             = EXCLUDED.ssid,
     signal_dbm       = EXCLUDED.signal_dbm,
     is_connected     = true,
-    connected_at     = EXCLUDED.connected_at,
+    connected_at     = CASE WHEN clients.is_connected THEN clients.connected_at ELSE EXCLUDED.connected_at END,
     disconnected_at  = NULL,
     last_seen        = EXCLUDED.last_seen,
     source           = EXCLUDED.source,
     raw              = EXCLUDED.raw,
-    synced_at        = EXCLUDED.synced_at`
+    synced_at        = EXCLUDED.synced_at
+RETURNING id::text`
+
+const selectExistingClients = `
+SELECT id::text, unifi_client_id, is_connected
+FROM clients
+WHERE site_id = $1::uuid`
+
+const disconnectClient = `
+UPDATE clients
+SET is_connected = false, disconnected_at = $2, synced_at = $2
+WHERE id = $1::uuid`
+
+const insertClientEvent = `
+INSERT INTO client_events (client_id, site_id, event_type, occurred_at)
+VALUES ($1::uuid, $2::uuid, $3, $4)`
 
 const upsertNetwork = `
 INSERT INTO networks (
@@ -175,16 +193,72 @@ func (r *PostgresRepository) ApplySite(ctx context.Context, snap SiteSnapshot) e
 		}
 	}
 
-	for _, c := range snap.Clients {
-		if strings.TrimSpace(c.ID) == "" {
-			continue
+	hasClients := snap.HasClients || len(snap.Clients) > 0
+	if hasClients {
+		type clientState struct {
+			id          string
+			isConnected bool
 		}
-		if _, err := tx.Exec(ctx, upsertClient,
-			siteID, c.ID, c.MAC, c.Hostname, optionalText(c.IP), c.APID,
-			c.SSID, optionalSignal(c.SignalDBm), optionalTime(c.ConnectedAt),
-			snap.SyncedAt, snap.Source, jsonPayload(c.Raw),
-		); err != nil {
-			return fmt.Errorf("inventory: upsert client %s: %w", c.ID, err)
+		existingClients := make(map[string]clientState)
+		rows, err := tx.Query(ctx, selectExistingClients, siteID)
+		if err != nil {
+			return fmt.Errorf("inventory: query existing clients for site %s: %w", site.ID, err)
+		}
+		for rows.Next() {
+			var unifiID, clientUUID string
+			var isConnected bool
+			if err := rows.Scan(&clientUUID, &unifiID, &isConnected); err != nil {
+				rows.Close()
+				return fmt.Errorf("inventory: scan existing client: %w", err)
+			}
+			existingClients[unifiID] = clientState{id: clientUUID, isConnected: isConnected}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("inventory: iterate existing clients: %w", err)
+		}
+
+		activeMap := make(map[string]bool, len(snap.Clients))
+		for _, c := range snap.Clients {
+			if strings.TrimSpace(c.ID) == "" {
+				continue
+			}
+			activeMap[c.ID] = true
+			st, known := existingClients[c.ID]
+
+			occurred := snap.SyncedAt
+			if !c.ConnectedAt.IsZero() {
+				occurred = c.ConnectedAt
+			}
+
+			var clientUUID string
+			if err := tx.QueryRow(ctx, upsertClient,
+				siteID, c.ID, strings.ToLower(c.MAC), c.Hostname, optionalText(c.IP),
+				optionalText(c.Type), optionalText(c.AccessType), c.APID,
+				c.SSID, optionalSignal(c.SignalDBm), occurred,
+				snap.SyncedAt, snap.Source, jsonPayload(c.Raw),
+			).Scan(&clientUUID); err != nil {
+				return fmt.Errorf("inventory: upsert client %s: %w", c.ID, err)
+			}
+
+			// Record 'connected' event on first observation or transition from disconnected
+			if !known || !st.isConnected {
+				if _, err := tx.Exec(ctx, insertClientEvent, clientUUID, siteID, "connected", occurred); err != nil {
+					return fmt.Errorf("inventory: record client connected event %s: %w", c.ID, err)
+				}
+			}
+		}
+
+		// Disconnect clients no longer reported in this cycle
+		for unifiID, st := range existingClients {
+			if !activeMap[unifiID] && st.isConnected {
+				if _, err := tx.Exec(ctx, disconnectClient, st.id, snap.SyncedAt); err != nil {
+					return fmt.Errorf("inventory: mark client disconnected %s: %w", unifiID, err)
+				}
+				if _, err := tx.Exec(ctx, insertClientEvent, st.id, siteID, "disconnected", snap.SyncedAt); err != nil {
+					return fmt.Errorf("inventory: record client disconnected event %s: %w", unifiID, err)
+				}
+			}
 		}
 	}
 

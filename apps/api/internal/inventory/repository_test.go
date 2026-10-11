@@ -468,3 +468,123 @@ func readFixture(t *testing.T, name string) []byte {
 	}
 	return body
 }
+
+func TestPostgresClientPresenceTransitions(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	repo := NewPostgresRepository(pool)
+
+	t1 := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
+	snap1 := SiteSnapshot{
+		Site:       unifi.Site{ID: "site-trans", Name: "Transition Site", ConsoleID: "host-trans"},
+		ConsoleID:  "host-trans",
+		Source:     SourceConsole,
+		SyncedAt:   t1,
+		HasClients: true,
+		Clients: []unifi.ClientInfo{
+			{ID: "c1", SiteID: "site-trans", MAC: "aa:bb:cc:01:01:01", Hostname: "phone", IP: "192.168.1.10", APID: "dev-1", Type: "WIRELESS", AccessType: "DEFAULT"},
+			{ID: "c2", SiteID: "site-trans", MAC: "aa:bb:cc:01:01:02", Hostname: "tablet", IP: "192.168.1.11", APID: "dev-1", Type: "WIRED"},
+		},
+	}
+
+	// Cycle 1: both c1 and c2 connect
+	if err := repo.ApplySite(ctx, snap1); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+
+	var clientsCount, eventsCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM clients WHERE is_connected = true").Scan(&clientsCount); err != nil {
+		t.Fatalf("count connected clients: %v", err)
+	}
+	if clientsCount != 2 {
+		t.Fatalf("connected clients = %d, want 2", clientsCount)
+	}
+
+	// The adapter's client type must survive the write path, otherwise the
+	// `client_type` filter on GET /clients can never match a row.
+	var c1Type, c1Access *string
+	var c2Access *string
+	if err := pool.QueryRow(ctx,
+		"SELECT client_type, access_type FROM clients WHERE unifi_client_id = 'c1'").Scan(&c1Type, &c1Access); err != nil {
+		t.Fatalf("query c1 type: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		"SELECT access_type FROM clients WHERE unifi_client_id = 'c2'").Scan(&c2Access); err != nil {
+		t.Fatalf("query c2 access type: %v", err)
+	}
+	if c1Type == nil || *c1Type != "WIRELESS" || c1Access == nil || *c1Access != "DEFAULT" {
+		t.Fatalf("c1 client_type/access_type = %v/%v, want WIRELESS/DEFAULT", c1Type, c1Access)
+	}
+	if c2Access != nil {
+		t.Fatalf("c2 access_type = %v, want NULL when the adapter reported none", *c2Access)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM client_events").Scan(&eventsCount); err != nil {
+		t.Fatalf("count client_events: %v", err)
+	}
+	if eventsCount != 2 {
+		t.Fatalf("client_events = %d, want 2", eventsCount)
+	}
+
+	// Cycle 2: identical clients -> no new events
+	t2 := t1.Add(30 * time.Second)
+	snap2 := snap1
+	snap2.SyncedAt = t2
+	if err := repo.ApplySite(ctx, snap2); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM client_events").Scan(&eventsCount); err != nil {
+		t.Fatalf("count client_events: %v", err)
+	}
+	if eventsCount != 2 {
+		t.Fatalf("client_events after unchanged cycle = %d, want 2", eventsCount)
+	}
+
+	// Cycle 3: c2 disconnects (only c1 reported)
+	t3 := t2.Add(30 * time.Second)
+	snap3 := snap1
+	snap3.SyncedAt = t3
+	snap3.Clients = []unifi.ClientInfo{snap1.Clients[0]}
+	if err := repo.ApplySite(ctx, snap3); err != nil {
+		t.Fatalf("cycle 3: %v", err)
+	}
+
+	var c2Connected bool
+	var c2DisconnectedAt *time.Time
+	if err := pool.QueryRow(ctx, "SELECT is_connected, disconnected_at FROM clients WHERE unifi_client_id = 'c2'").Scan(&c2Connected, &c2DisconnectedAt); err != nil {
+		t.Fatalf("query c2 status: %v", err)
+	}
+	if c2Connected || c2DisconnectedAt == nil {
+		t.Fatalf("c2 connected = %v, disconnected_at = %v; want false and timestamp", c2Connected, c2DisconnectedAt)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM client_events").Scan(&eventsCount); err != nil {
+		t.Fatalf("count client_events: %v", err)
+	}
+	if eventsCount != 3 {
+		t.Fatalf("client_events after disconnect = %d, want 3", eventsCount)
+	}
+
+	// Cycle 4: c2 reconnects
+	t4 := t3.Add(30 * time.Second)
+	snap4 := snap1
+	snap4.SyncedAt = t4
+	if err := repo.ApplySite(ctx, snap4); err != nil {
+		t.Fatalf("cycle 4: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT is_connected, disconnected_at FROM clients WHERE unifi_client_id = 'c2'").Scan(&c2Connected, &c2DisconnectedAt); err != nil {
+		t.Fatalf("query c2 status after reconnect: %v", err)
+	}
+	if !c2Connected || c2DisconnectedAt != nil {
+		t.Fatalf("c2 connected = %v, disconnected_at = %v; want true and nil", c2Connected, c2DisconnectedAt)
+	}
+
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM client_events").Scan(&eventsCount); err != nil {
+		t.Fatalf("count client_events: %v", err)
+	}
+	if eventsCount != 4 {
+		t.Fatalf("client_events after reconnect = %d, want 4", eventsCount)
+	}
+}
