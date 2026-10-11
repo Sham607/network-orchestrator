@@ -30,6 +30,10 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 				{ID: "client-1", SiteID: "site-alpha", MAC: "aa:bb:cc:dd:ee:01", Hostname: "ivan-laptop", IP: "10.20.5.44", APID: "dev-1", ConnectedAt: base},
 				{ID: "client-2", SiteID: "site-alpha", MAC: "aa:bb:cc:dd:ee:02", Hostname: "office-desktop", APID: "dev-2", ConnectedAt: base.Add(time.Minute)},
 			},
+			Networks: []unifi.Network{
+				{ID: "net-1", SiteID: "site-alpha", Name: "Default", VLAN: 1, Management: "GATEWAY", Enabled: true, IsDefault: true, Origin: "SYSTEM_DEFINED", Configurable: true},
+				{ID: "net-2", SiteID: "site-alpha", Name: "Guest", VLAN: 20, Management: "SWITCH", Enabled: false, IsDefault: false, Origin: "USER_DEFINED", Configurable: true},
+			},
 		},
 		{
 			Site:      unifi.Site{ID: "site-beta", Name: "Beta Branch"},
@@ -43,6 +47,9 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 			Clients: []unifi.ClientInfo{
 				{ID: "client-3", SiteID: "site-beta", MAC: "aa:bb:cc:dd:ee:03", Hostname: "beta-phone", APID: "dev-3", ConnectedAt: base.Add(2 * time.Minute)},
 			},
+			Networks: []unifi.Network{
+				{ID: "net-3", SiteID: "site-beta", Name: "IoT", VLAN: 30, Management: "GATEWAY", Enabled: true, IsDefault: false, Origin: "USER_DEFINED", Configurable: true},
+			},
 		},
 		{
 			Site:      unifi.Site{ID: "site-gamma", Name: "gamma Site"},
@@ -52,6 +59,9 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 			// UniFi reported neither name, model nor type for this device: the
 			// read side must leave those unknown instead of inventing values.
 			Devices: []unifi.Device{{ID: "dev-5", SiteID: "site-gamma", MAC: "aa:bb:cc:00:00:05"}},
+			Networks: []unifi.Network{
+				{ID: "net-4", SiteID: "site-gamma", Name: "Untagged"},
+			},
 		},
 	}
 
@@ -98,6 +108,18 @@ func clientUUID(t *testing.T, repo *PostgresRepository, unifiClientID string) st
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func ptr[T any](v T) *T { return &v }
+
+func networkUUID(t *testing.T, repo *PostgresRepository, unifiNetworkID string) string {
+	t.Helper()
+	var id string
+	if err := repo.pool.QueryRow(context.Background(),
+		`SELECT id::text FROM networks WHERE unifi_network_id = $1`, unifiNetworkID).Scan(&id); err != nil {
+		t.Fatalf("read uuid of %s: %v", unifiNetworkID, err)
+	}
+	return id
+}
 
 func names(page SitePage) []string {
 	out := make([]string, 0, len(page.Items))
@@ -371,6 +393,103 @@ func TestPostgresGetClientFindsAndReportsNotFound(t *testing.T) {
 	}
 }
 
+func TestPostgresListNetworksPagingAndSorting(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+	ctx := context.Background()
+
+	// Default sort in contract is vlan_id asc.
+	page, err := repo.ListNetworks(ctx, NetworkQuery{Page: 1, PageSize: 10, Sort: "vlan_id", Order: "asc"})
+	if err != nil {
+		t.Fatalf("list networks: %v", err)
+	}
+	if page.Total != 4 {
+		t.Fatalf("total = %d, want 4", page.Total)
+	}
+	if len(page.Items) != 4 {
+		t.Fatalf("got %d networks, want 4", len(page.Items))
+	}
+
+	pageDesc, err := repo.ListNetworks(ctx, NetworkQuery{Page: 1, PageSize: 10, Sort: "vlan_id", Order: "desc"})
+	if err != nil {
+		t.Fatalf("list networks desc: %v", err)
+	}
+	if pageDesc.Total != 4 {
+		t.Fatalf("total = %d, want 4", pageDesc.Total)
+	}
+}
+
+func TestPostgresListNetworksFiltersAndCombines(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+	ctx := context.Background()
+	alpha := siteUUID(t, repo, "site-alpha")
+
+	cases := []struct {
+		name  string
+		query NetworkQuery
+		want  []string
+	}{
+		{"unfiltered", NetworkQuery{}, []string{"Default", "Guest", "IoT", "Untagged"}},
+		{"site", NetworkQuery{SiteID: alpha}, []string{"Default", "Guest"}},
+		{"vlan_id", NetworkQuery{VLANID: ptr(20)}, []string{"Guest"}},
+		{"management", NetworkQuery{Management: "GATEWAY"}, []string{"Default", "IoT"}},
+		{"enabled true", NetworkQuery{Enabled: ptr(true)}, []string{"Default", "IoT"}},
+		{"enabled false", NetworkQuery{Enabled: ptr(false)}, []string{"Guest"}},
+		{"combined narrow to empty", NetworkQuery{SiteID: alpha, Management: "GATEWAY", VLANID: ptr(999)}, nil},
+	}
+
+	for _, tc := range cases {
+		query := tc.query
+		query.Page, query.PageSize, query.Sort, query.Order = 1, 10, "name", "asc"
+		page, err := repo.ListNetworks(ctx, query)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		got := make([]string, 0, len(page.Items))
+		for _, n := range page.Items {
+			got = append(got, n.Name)
+		}
+		if !equal(got, tc.want) {
+			t.Errorf("%s = %v, want %v", tc.name, got, tc.want)
+		}
+		if page.Total != len(tc.want) {
+			t.Errorf("%s total = %d, want %d", tc.name, page.Total, len(tc.want))
+		}
+	}
+}
+
+func TestPostgresGetNetworkMatchesLocalID(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+	ctx := context.Background()
+
+	id := networkUUID(t, repo, "net-1")
+	network, ok, err := repo.GetNetwork(ctx, id)
+	if err != nil {
+		t.Fatalf("get network: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetNetwork(%s) ok = false, want true", id)
+	}
+	if network.Name != "Default" || network.VLANID == nil || *network.VLANID != 1 ||
+		network.Management == nil || *network.Management != "GATEWAY" ||
+		network.Enabled == nil || !*network.Enabled ||
+		network.IsDefault == nil || !*network.IsDefault ||
+		network.Origin == nil || *network.Origin != "SYSTEM_DEFINED" ||
+		network.Configurable == nil || !*network.Configurable {
+		t.Fatalf("network = %+v, want Default gateway network with all fields", network)
+	}
+
+	_, ok, err = repo.GetNetwork(ctx, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatalf("get missing network: %v", err)
+	}
+	if ok {
+		t.Fatal("GetNetwork ok = true for an id that does not exist, want false")
+	}
+}
+
 // TestListRejectsASortTheContractDoesNotDeclare keeps user input out of the SQL
 // text: the whitelist is the only thing that can reach ORDER BY. A repository
 // is not reached without a pool, which proves the check happens first.
@@ -385,6 +504,9 @@ func TestListRejectsASortTheContractDoesNotDeclare(t *testing.T) {
 	}
 	if _, err := repo.ListClients(context.Background(), ClientQuery{Page: 1, PageSize: 10, Sort: "mac", Order: "asc"}); err == nil {
 		t.Error("ListClients accepted an undeclared sort field")
+	}
+	if _, err := repo.ListNetworks(context.Background(), NetworkQuery{Page: 1, PageSize: 10, Sort: "gateway", Order: "asc"}); err == nil {
+		t.Error("ListNetworks accepted an undeclared sort field")
 	}
 }
 

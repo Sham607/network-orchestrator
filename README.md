@@ -178,7 +178,7 @@ parallel (`openapi/mock-expectations.md`).
 | `GET /api/v1/devices` | APs, switches, gateways from the cache (filter by site/status/type/mac), paged and sorted. | **Served** |
 | `GET /api/v1/devices/{id}` | One device. | Contract only — returns 404 |
 | `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | **Served** |
-| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | Contract only — returns 404 |
+| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | **Served** |
 | `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | **Served** as a stub: rejects before reading the body and never touches UniFi |
 
 Every registered route answers an error with one shape: `{ "code", "message",

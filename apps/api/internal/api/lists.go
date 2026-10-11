@@ -191,6 +191,21 @@ func validateBool(fields fieldErrors, name, value string) (bool, bool) {
 	}
 }
 
+// validateIntRange enforces an integer range [min, max], returning the parsed value
+// and whether it was valid.
+func validateIntRange(fields fieldErrors, name, value string, min, max int) (int, bool) {
+	n, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		fields[name] = "must be an integer"
+		return 0, false
+	}
+	if n < int64(min) || n > int64(max) {
+		fields[name] = fmt.Sprintf("must be between %d and %d", min, max)
+		return 0, false
+	}
+	return int(n), true
+}
+
 // writeValidationFailed renders the contract's 400 body.
 func writeValidationFailed(w http.ResponseWriter, r *http.Request, fields fieldErrors) {
 	writeError(w, r, CodeValidationFailed, fields.message(), map[string]any{"fields": fields})

@@ -18,21 +18,29 @@ import (
 // the transport does with a page (validate, map, render), not how the cache is
 // queried — that is covered by the real-Postgres tests in package inventory.
 type fakeInventory struct {
-	sites     inventory.SitePage
-	siteErr   error
-	devices   inventory.DevicePage
-	deviceErr error
-	clients   inventory.ClientPage
-	clientErr error
+	sites      inventory.SitePage
+	siteErr    error
+	devices    inventory.DevicePage
+	deviceErr  error
+	clients    inventory.ClientPage
+	clientErr  error
+	networks   inventory.NetworkPage
+	networkErr error
 
 	getClient      inventory.Client
 	getClientFound bool
 	getClientErr   error
 
-	siteQueries    []inventory.SiteQuery
-	deviceQueries  []inventory.DeviceQuery
-	clientQueries  []inventory.ClientQuery
-	getClientCalls []string
+	getNetwork      inventory.Network
+	getNetworkFound bool
+	getNetworkErr   error
+
+	siteQueries     []inventory.SiteQuery
+	deviceQueries   []inventory.DeviceQuery
+	clientQueries   []inventory.ClientQuery
+	networkQueries  []inventory.NetworkQuery
+	getClientCalls  []string
+	getNetworkCalls []string
 }
 
 func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inventory.SitePage, error) {
@@ -53,6 +61,16 @@ func (f *fakeInventory) ListClients(_ context.Context, q inventory.ClientQuery) 
 func (f *fakeInventory) GetClient(_ context.Context, id string) (inventory.Client, bool, error) {
 	f.getClientCalls = append(f.getClientCalls, id)
 	return f.getClient, f.getClientFound, f.getClientErr
+}
+
+func (f *fakeInventory) ListNetworks(_ context.Context, q inventory.NetworkQuery) (inventory.NetworkPage, error) {
+	f.networkQueries = append(f.networkQueries, q)
+	return f.networks, f.networkErr
+}
+
+func (f *fakeInventory) GetNetwork(_ context.Context, id string) (inventory.Network, bool, error) {
+	f.getNetworkCalls = append(f.getNetworkCalls, id)
+	return f.getNetwork, f.getNetworkFound, f.getNetworkErr
 }
 
 func (f *fakeInventory) siteQuery() inventory.SiteQuery {
@@ -76,8 +94,15 @@ func (f *fakeInventory) clientQuery() inventory.ClientQuery {
 	return f.clientQueries[len(f.clientQueries)-1]
 }
 
+func (f *fakeInventory) networkQuery() inventory.NetworkQuery {
+	if len(f.networkQueries) == 0 {
+		return inventory.NetworkQuery{}
+	}
+	return f.networkQueries[len(f.networkQueries)-1]
+}
+
 func (f *fakeInventory) called() bool {
-	return len(f.siteQueries)+len(f.deviceQueries)+len(f.clientQueries)+len(f.getClientCalls) > 0
+	return len(f.siteQueries)+len(f.deviceQueries)+len(f.clientQueries)+len(f.networkQueries)+len(f.getClientCalls)+len(f.getNetworkCalls) > 0
 }
 
 // listRouter serves the list endpoints with UniFi disabled: the cache is the
@@ -186,6 +211,39 @@ func sampleClients() inventory.ClientPage {
 				ID: "5c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e90", SiteID: "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
 				IsConnected: false, DisconnectedAt: &synced,
 				FirstSeen: firstSeen, LastSeen: synced, SyncedAt: synced,
+			},
+		},
+	}
+}
+
+func sampleNetworks() inventory.NetworkPage {
+	synced := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	return inventory.NetworkPage{
+		Total: 2,
+		Items: []inventory.Network{
+			{
+				ID:           "5d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9a",
+				SiteID:       "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
+				Name:         "Default",
+				VLANID:       ptr(1),
+				Management:   ptr("GATEWAY"),
+				Enabled:      ptr(true),
+				IsDefault:    ptr(true),
+				Origin:       ptr("SYSTEM_DEFINED"),
+				Configurable: ptr(true),
+				SyncedAt:     synced,
+			},
+			{
+				ID:           "6d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9b",
+				SiteID:       "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
+				Name:         "Guest",
+				VLANID:       ptr(20),
+				Management:   ptr("SWITCH"),
+				Enabled:      ptr(true),
+				IsDefault:    ptr(false),
+				Origin:       ptr("USER_DEFINED"),
+				Configurable: ptr(true),
+				SyncedAt:     synced,
 			},
 		},
 	}
@@ -539,10 +597,10 @@ func TestFreshCacheIsServedWhileTheControllerIsOffline(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: false, LastSuccessfulSyncAt: ptr(time.Now().Add(-time.Minute)),
 	}}
 
-	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
+	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients(), networks: sampleNetworks()}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, fresh, inv)
 
-	for _, endpoint := range []string{"sites", "devices", "clients"} {
+	for _, endpoint := range []string{"sites", "devices", "clients", "networks"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200 from a fresh cache (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -565,10 +623,10 @@ func TestStaleCacheWithAnOfflineControllerIs503(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: false, LastSuccessfulSyncAt: &synced, LastErrorKind: "unifi_unreachable",
 	}}
 
-	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
+	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients(), networks: sampleNetworks()}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, stale, inv)
 
-	for _, endpoint := range []string{"sites", "devices", "clients"} {
+	for _, endpoint := range []string{"sites", "devices", "clients", "networks"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status = %d, want 503 (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -602,13 +660,14 @@ func TestControllerNeverAnsweredIs503(t *testing.T) {
 	}}
 
 	inv := &fakeInventory{
-		sites:   inventory.SitePage{Items: []inventory.Site{}},
-		devices: inventory.DevicePage{Items: []inventory.Device{}},
-		clients: inventory.ClientPage{Items: []inventory.Client{}},
+		sites:    inventory.SitePage{Items: []inventory.Site{}},
+		devices:  inventory.DevicePage{Items: []inventory.Device{}},
+		clients:  inventory.ClientPage{Items: []inventory.Client{}},
+		networks: inventory.NetworkPage{Items: []inventory.Network{}},
 	}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, never, inv)
 
-	for _, endpoint := range []string{"sites", "devices", "clients"} {
+	for _, endpoint := range []string{"sites", "devices", "clients", "networks"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status = %d, want 503 (body: %s)", endpoint, rr.Code, rr.Body.String())

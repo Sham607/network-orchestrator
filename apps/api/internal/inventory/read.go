@@ -49,6 +49,18 @@ type ClientQuery struct {
 	SSID           string
 }
 
+// NetworkQuery is one page request of GET /networks.
+type NetworkQuery struct {
+	Page       int
+	PageSize   int
+	Sort       string
+	Order      string
+	SiteID     string
+	VLANID     *int
+	Management string
+	Enabled    *bool
+}
+
 // Site is a cached site as the transport exposes it. The raw UniFi payload,
 // the UniFi natural keys and the console are deliberately absent: the API
 // exposes the control plane's own id, not UniFi's (ADR-003 §2, §5).
@@ -124,6 +136,26 @@ type ClientPage struct {
 	Total int
 }
 
+// Network is a cached network as the transport exposes it.
+type Network struct {
+	ID           string
+	SiteID       string
+	Name         string
+	VLANID       *int
+	Management   *string
+	Enabled      *bool
+	IsDefault    *bool
+	Origin       *string
+	Configurable *bool
+	SyncedAt     time.Time
+}
+
+// NetworkPage is one page of networks plus the unpaged total.
+type NetworkPage struct {
+	Items []Network
+	Total int
+}
+
 // The filter clause is shared by the page query and the count query so the two
 // can never drift. An empty filter is bound as NULL, which is how one static
 // statement serves every combination without building SQL from input.
@@ -146,6 +178,12 @@ AND ($3::text IS NULL OR c.uplink_device_id = $3::text)
 AND ($4::text IS NULL OR c.client_type = $4::text)
 AND ($5::text IS NULL OR c.mac = $5::text)
 AND ($6::text IS NULL OR c.ssid = $6::text)`
+
+	networksFilter = `
+    ($1::uuid IS NULL OR n.site_id = $1::uuid)
+AND ($2::integer IS NULL OR n.vlan_id = $2::integer)
+AND ($3::text IS NULL OR n.management = $3::text)
+AND ($4::boolean IS NULL OR n.enabled = $4::boolean)`
 )
 
 const listSitesSQL = `
@@ -189,6 +227,22 @@ SELECT c.id::text, c.site_id::text, c.mac, c.hostname, host(c.ip_address), c.cli
 FROM clients c
 WHERE c.id = $1::uuid`
 
+const listNetworksSQL = `
+SELECT n.id::text, n.site_id::text, n.name, n.vlan_id, n.management,
+       n.enabled, n.is_default, n.origin, n.configurable, n.synced_at
+FROM networks n
+WHERE ` + networksFilter + `
+ORDER BY %s
+LIMIT $5 OFFSET $6`
+
+const countNetworksSQL = `SELECT count(*) FROM networks n WHERE ` + networksFilter
+
+const getNetworkSQL = `
+SELECT n.id::text, n.site_id::text, n.name, n.vlan_id, n.management,
+       n.enabled, n.is_default, n.origin, n.configurable, n.synced_at
+FROM networks n
+WHERE n.id = $1::uuid`
+
 // sortColumns whitelist the sort fields each endpoint declares. The transport
 // validates the enum first; the map is what keeps user input out of the SQL
 // text, and an unknown field is an error rather than a silent fallback.
@@ -209,6 +263,11 @@ var (
 		"last_seen":    "c.last_seen",
 		"connected_at": "c.connected_at",
 		"synced_at":    "c.synced_at",
+	}
+	networkSortColumns = map[string]string{
+		"name":      "n.name",
+		"vlan_id":   "n.vlan_id",
+		"synced_at": "n.synced_at",
 	}
 )
 
@@ -357,6 +416,64 @@ func (r *PostgresRepository) GetClient(ctx context.Context, id string) (Client, 
 		return Client{}, false, fmt.Errorf("inventory: get client %s: %w", id, err)
 	}
 	return client, true, nil
+}
+
+// ListNetworks returns one page of cached networks according to q.
+func (r *PostgresRepository) ListNetworks(ctx context.Context, q NetworkQuery) (NetworkPage, error) {
+	order, err := orderBy(networkSortColumns, q.Sort, q.Order, "n.id")
+	if err != nil {
+		return NetworkPage{}, fmt.Errorf("inventory: list networks: %w", err)
+	}
+
+	tx, err := r.beginRead(ctx)
+	if err != nil {
+		return NetworkPage{}, fmt.Errorf("inventory: list networks: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	filters := []any{
+		optionalText(q.SiteID), q.VLANID, optionalText(q.Management), q.Enabled,
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, countNetworksSQL, filters...).Scan(&total); err != nil {
+		return NetworkPage{}, fmt.Errorf("inventory: count networks: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, fmt.Sprintf(listNetworksSQL, order),
+		append(filters, q.PageSize, offsetOf(q.Page, q.PageSize))...)
+	if err != nil {
+		return NetworkPage{}, fmt.Errorf("inventory: query networks: %w", err)
+	}
+	defer rows.Close()
+
+	page := NetworkPage{Items: []Network{}, Total: int(total)}
+	for rows.Next() {
+		var n Network
+		if err := rows.Scan(&n.ID, &n.SiteID, &n.Name, &n.VLANID, &n.Management,
+			&n.Enabled, &n.IsDefault, &n.Origin, &n.Configurable, &n.SyncedAt); err != nil {
+			return NetworkPage{}, fmt.Errorf("inventory: scan network: %w", err)
+		}
+		page.Items = append(page.Items, n)
+	}
+	if err := rows.Err(); err != nil {
+		return NetworkPage{}, fmt.Errorf("inventory: read networks: %w", err)
+	}
+	return page, nil
+}
+
+// GetNetwork returns one cached network by its local id. ok is false when no row
+// matches, which the transport renders as 404 (ADR-003 §5).
+func (r *PostgresRepository) GetNetwork(ctx context.Context, id string) (Network, bool, error) {
+	var n Network
+	err := r.pool.QueryRow(ctx, getNetworkSQL, id).Scan(&n.ID, &n.SiteID, &n.Name, &n.VLANID,
+		&n.Management, &n.Enabled, &n.IsDefault, &n.Origin, &n.Configurable, &n.SyncedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Network{}, false, nil
+		}
+		return Network{}, false, fmt.Errorf("inventory: get network %s: %w", id, err)
+	}
+	return n, true, nil
 }
 
 // beginRead opens the read-only, repeatable-read transaction a page is served
