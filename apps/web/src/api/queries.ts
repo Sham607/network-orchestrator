@@ -6,6 +6,8 @@ import type {
   ClientListQuery,
   DeviceList,
   DeviceListQuery,
+  NetworkList,
+  NetworkListQuery,
   SiteList,
   SyncStatus,
 } from './types'
@@ -42,6 +44,17 @@ export function useClients(query: ClientListQuery) {
   return useQuery({
     queryKey: clientsQueryKey(query),
     queryFn: ({ signal }) => apiGet<ClientList>('/clients', query, signal),
+  })
+}
+
+export function networksQueryKey(query: NetworkListQuery) {
+  return ['networks', query] as const
+}
+
+export function useNetworks(query: NetworkListQuery) {
+  return useQuery({
+    queryKey: networksQueryKey(query),
+    queryFn: ({ signal }) => apiGet<NetworkList>('/networks', query, signal),
   })
 }
 

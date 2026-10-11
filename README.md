@@ -214,30 +214,31 @@ stale and the probe stays a database check.
 
 ## Web dashboard
 
-`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Three
-views are implemented: sites (`/sites`), devices (`/devices`) and clients
-(`/clients`), all built against `openapi/openapi.yaml`.
+`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Four
+views are implemented: sites (`/sites`), devices (`/devices`), clients
+(`/clients`) and networks (`/networks`), all built against `openapi/openapi.yaml`.
 
 - **Types come from the contract.** `apps/web/src/api/schema.d.ts` is generated
   by `openapi-typescript` and committed; `npm run openapi:check` (and `make
   openapi-types` in CI) fails when it drifts from the contract. `src/api/types.ts`
   only aliases the generated types, so no API type is maintained twice.
-- **Honest states.** `/sites`, `/devices` and `/clients` are all served from the
-  local cache today (ZENI-15; `/clients` landed with the sync worker in ZENI-23).
+- **Honest states.** `/sites`, `/devices`, `/clients` and `/networks` are all served from the
+  local cache today (ZENI-15; `/clients` in ZENI-23; `/networks` in ZENI-32).
   The views render the API's `{ code, message, details }` verbatim — `request_id`
   included — and say plainly when a 404 means "contract-only, not served yet", so
   the UI stays truthful against a build that does not serve them. No fabricated
   rows, no endless spinner.
 - **Filtering is server-side.** The devices view sends `site_id`, `status`,
   `page` and `page_size`; the clients view sends `site_id`, `connected` and
-  `client_type` the same way. The browser never downloads a table to filter it
-  itself — with one deliberate exception: the clients view's free-text search
-  box, because the contract exposes no hostname/IP filter for clients (only an
-  exact `mac` match). It narrows only the rows already loaded for the current
+  `client_type`; the networks view sends `site_id`, `vlan_id`, `management` and
+  `enabled` the same way. The browser never downloads a table to filter it
+  itself — with one deliberate exception: the free-text search
+  box, because the contract exposes no free-text search for clients or networks.
+  It narrows only the rows already loaded for the current
   page, and the UI says so rather than implying a full-dataset search.
-- **An empty cache is explained, not guessed at.** When `/clients` answers with
+- **An empty cache is explained, not guessed at.** When `/clients` or `/networks` answers with
   zero rows the view asks `/sync/status` why, and says it: if the cache was
-  filled from the UniFi **cloud** surface it states that cloud serves no clients
+  filled from the UniFi **cloud** surface it states that cloud serves no clients or networks
   (ADR-001) and that rows need `UNIFI_MODE=local` over the LAN/VPN, instead of
   promising rows that will never arrive. That extra call is best-effort — if it
   fails, the view falls back to "the sync worker has not written them yet".

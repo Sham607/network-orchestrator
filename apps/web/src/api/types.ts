@@ -13,6 +13,8 @@ export type Pagination = components['schemas']['Pagination']
 export type SiteList = components['schemas']['SiteList']
 export type DeviceList = components['schemas']['DeviceList']
 export type ClientList = components['schemas']['ClientList']
+export type Network = components['schemas']['Network']
+export type NetworkList = components['schemas']['NetworkList']
 export type SyncStatus = components['schemas']['SyncStatus']
 
 /** The single error body shape every endpoint returns: `{ code, message, details }`. */
@@ -25,3 +27,4 @@ export type ErrorCode = ErrorBody['code']
 export type SiteListQuery = NonNullable<paths['/sites']['get']['parameters']['query']>
 export type DeviceListQuery = NonNullable<paths['/devices']['get']['parameters']['query']>
 export type ClientListQuery = NonNullable<paths['/clients']['get']['parameters']['query']>
+export type NetworkListQuery = NonNullable<paths['/networks']['get']['parameters']['query']>

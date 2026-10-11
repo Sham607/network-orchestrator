@@ -2,6 +2,7 @@ import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
 import ClientsPage from './pages/ClientsPage'
 import DevicesPage from './pages/DevicesPage'
+import NetworksPage from './pages/NetworksPage'
 import SitesPage from './pages/SitesPage'
 
 /**
@@ -23,6 +24,7 @@ export default function App() {
           <NavLink to="/sites">Sites</NavLink>
           <NavLink to="/devices">Devices</NavLink>
           <NavLink to="/clients">Clients</NavLink>
+          <NavLink to="/networks">Networks</NavLink>
         </nav>
       </header>
 
@@ -32,6 +34,7 @@ export default function App() {
           <Route path="/sites" element={<SitesPage />} />
           <Route path="/devices" element={<DevicesPage />} />
           <Route path="/clients" element={<ClientsPage />} />
+          <Route path="/networks" element={<NetworksPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>
@@ -49,7 +52,7 @@ function NotFoundPage() {
     <section aria-labelledby="not-found-heading">
       <h2 id="not-found-heading">Page not found</h2>
       <p>
-        Use the navigation above to reach the sites, devices, or clients view.
+        Use the navigation above to reach the sites, devices, clients, or networks view.
       </p>
     </section>
   )

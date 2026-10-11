@@ -4,7 +4,7 @@ import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 
-import type { ClientList, DeviceList, ErrorBody, SiteList, SyncStatus } from '../api/types'
+import type { ClientList, DeviceList, ErrorBody, NetworkList, SiteList, SyncStatus } from '../api/types'
 
 /** Render a component inside the providers the app supplies at runtime. */
 export function renderWithProviders(
@@ -197,6 +197,53 @@ export const clientListFixture: ClientList = {
 }
 
 export const emptyClientListFixture: ClientList = {
+  data: [],
+  pagination: { page: 1, page_size: 25, total: 0, total_pages: 0 },
+}
+
+export const networkListFixture: NetworkList = {
+  data: [
+    {
+      id: '5d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9a',
+      site_id: '1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c',
+      name: 'Default',
+      vlan_id: 1,
+      management: 'GATEWAY',
+      enabled: true,
+      is_default: true,
+      origin: 'SYSTEM_DEFINED',
+      configurable: true,
+      synced_at: '2026-10-06T15:39:10Z',
+    },
+    {
+      id: '6d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9b',
+      site_id: '1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c',
+      name: 'Guest',
+      vlan_id: 20,
+      management: 'SWITCH',
+      enabled: false,
+      is_default: false,
+      origin: 'USER_DEFINED',
+      configurable: true,
+      synced_at: '2026-10-06T15:39:10Z',
+    },
+    {
+      id: '7d6e7f8a-9b0c-4d1e-2f3a-4b5c6d7e8f9c',
+      site_id: '2f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1d',
+      name: 'Untagged',
+      vlan_id: null,
+      management: null,
+      enabled: null,
+      is_default: null,
+      origin: null,
+      configurable: null,
+      synced_at: '2026-10-06T15:39:10Z',
+    },
+  ],
+  pagination: { page: 1, page_size: 25, total: 3, total_pages: 1 },
+}
+
+export const emptyNetworkListFixture: NetworkList = {
   data: [],
   pagination: { page: 1, page_size: 25, total: 0, total_pages: 0 },
 }
