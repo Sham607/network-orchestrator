@@ -4,7 +4,7 @@ import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 
-import type { ClientList, DeviceList, ErrorBody, SiteList } from '../api/types'
+import type { ClientList, DeviceList, ErrorBody, SiteList, SyncStatus } from '../api/types'
 
 /** Render a component inside the providers the app supplies at runtime. */
 export function renderWithProviders(
@@ -199,6 +199,23 @@ export const clientListFixture: ClientList = {
 export const emptyClientListFixture: ClientList = {
   data: [],
   pagination: { page: 1, page_size: 25, total: 0, total_pages: 0 },
+}
+
+/** `/sync/status` after a cycle that read the console Integration API (LAN/VPN). */
+export const consoleSyncStatusFixture: SyncStatus = {
+  worker_running: true,
+  last_successful_sync_at: '2026-10-06T15:39:10Z',
+  consecutive_failures: 0,
+  stale: false,
+  stale_after_seconds: 180,
+  circuit_breaker: { state: 'closed', opened_at: null },
+  unifi: { reachable: true, surface: 'console', last_error_kind: null },
+}
+
+/** The same worker reading the UniFi cloud surface, which serves no clients (ADR-001). */
+export const cloudSyncStatusFixture: SyncStatus = {
+  ...consoleSyncStatusFixture,
+  unifi: { reachable: true, surface: 'cloud', last_error_kind: null },
 }
 
 export const REQUEST_ID = '01a111bd-15d0-7f21-aec2-20bd264a6040'

@@ -13,6 +13,7 @@ export type Pagination = components['schemas']['Pagination']
 export type SiteList = components['schemas']['SiteList']
 export type DeviceList = components['schemas']['DeviceList']
 export type ClientList = components['schemas']['ClientList']
+export type SyncStatus = components['schemas']['SyncStatus']
 
 /** The single error body shape every endpoint returns: `{ code, message, details }`. */
 export type ErrorBody = components['schemas']['Error']

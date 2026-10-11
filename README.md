@@ -229,6 +229,12 @@ views are implemented: sites (`/sites`), devices (`/devices`) and clients
   box, because the contract exposes no hostname/IP filter for clients (only an
   exact `mac` match). It narrows only the rows already loaded for the current
   page, and the UI says so rather than implying a full-dataset search.
+- **An empty cache is explained, not guessed at.** When `/clients` answers with
+  zero rows the view asks `/sync/status` why, and says it: if the cache was
+  filled from the UniFi **cloud** surface it states that cloud serves no clients
+  (ADR-001) and that rows need `UNIFI_MODE=local` over the LAN/VPN, instead of
+  promising rows that will never arrive. That extra call is best-effort — if it
+  fails, the view falls back to "the sync worker has not written them yet".
 - **Read-only.** There is no write UI. The phase-1 action endpoints carry
   `x-status: proposed-gated` in the contract and are not registered by the API at
   all yet, so they answer 404 today; the contract documents `403 forbidden` with

@@ -6,6 +6,8 @@ import ClientsPage from '../pages/ClientsPage'
 import {
   REQUEST_ID,
   clientListFixture,
+  cloudSyncStatusFixture,
+  consoleSyncStatusFixture,
   emptyClientListFixture,
   installFetch,
   jsonResponse,
@@ -15,15 +17,23 @@ import {
   siteListFixture,
 } from './utils'
 
-/** Route the stub by endpoint so one mock serves both queries of this page. */
+/**
+ * Route the stub by endpoint so one mock serves every query of this page.
+ * `/sync/status` defaults to the console surface, i.e. a cache that can hold
+ * clients.
+ */
 function apiStub(routes: {
   clients: (url: string) => ReturnType<typeof jsonResponse>
   sites?: (url: string) => ReturnType<typeof jsonResponse>
+  sync?: (url: string) => ReturnType<typeof jsonResponse>
 }) {
   return installFetch((url) => {
     if (url.startsWith('/api/v1/clients')) return routes.clients(url)
     if (url.startsWith('/api/v1/sites')) {
       return (routes.sites ?? (() => jsonResponse(siteListFixture)))(url)
+    }
+    if (url.startsWith('/api/v1/sync/status')) {
+      return (routes.sync ?? (() => jsonResponse(consoleSyncStatusFixture)))(url)
     }
     throw new Error(`unexpected request: ${url}`)
   })
@@ -45,6 +55,7 @@ describe('ClientsPage', () => {
     expect(requestedUrls(fetchMock)).toEqual([
       '/api/v1/clients?page=1&page_size=25',
       '/api/v1/sites?page=1&page_size=50',
+      '/api/v1/sync/status',
     ])
   })
 
@@ -55,6 +66,21 @@ describe('ClientsPage', () => {
 
     expect(await screen.findByText('No clients in the cache')).toBeInTheDocument()
     expect(screen.queryByRole('table')).not.toBeInTheDocument()
+  })
+
+  it('explains that the cloud surface serves no clients instead of promising rows', async () => {
+    apiStub({
+      clients: () => jsonResponse(emptyClientListFixture),
+      sync: () => jsonResponse(cloudSyncStatusFixture),
+    })
+
+    renderWithProviders(<ClientsPage />, { route: '/clients' })
+
+    expect(await screen.findByText('No clients in the cache')).toBeInTheDocument()
+    expect(screen.getByText(/does not serve clients \(ADR-001\)/)).toHaveTextContent(
+      'run with UNIFI_MODE=local',
+    )
+    expect(screen.queryByText(/once the sync worker has written them/)).not.toBeInTheDocument()
   })
 
   it('says the filters matched nothing when the API returns an empty filtered page', async () => {

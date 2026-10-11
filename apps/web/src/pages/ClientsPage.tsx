@@ -1,8 +1,8 @@
 import { type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import { useClients, useSites } from '../api/queries'
-import type { Client, ClientListQuery } from '../api/types'
+import { useClients, useSites, useSyncStatus } from '../api/queries'
+import type { Client, ClientListQuery, SyncStatus } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
@@ -18,6 +18,21 @@ function matchesQuery(client: Client, q: string): boolean {
   return [client.hostname, client.mac, client.ip_address].some(
     (value) => typeof value === 'string' && value.toLowerCase().includes(needle),
   )
+}
+
+/**
+ * Why the cache is empty, as far as `/sync/status` knows.
+ *
+ * The UniFi cloud surface does not serve clients at all (ADR-001), so on a
+ * cloud deployment the rows this view reads can only ever come from
+ * `UNIFI_MODE=local`. Telling the operator to wait for the sync worker there
+ * would send them looking for rows that will never arrive.
+ */
+function emptyCacheHint(status: SyncStatus | undefined): string {
+  if (status?.unifi?.surface === 'cloud') {
+    return 'The cache is filled from the UniFi cloud surface (UNIFI_MODE=cloud), which does not serve clients (ADR-001). Client rows need the console Integration API: run with UNIFI_MODE=local from the office LAN or VPN.'
+  }
+  return 'The API answered successfully with zero clients. Clients appear once the sync worker has written them.'
 }
 
 /**
@@ -49,6 +64,9 @@ export default function ClientsPage() {
   // the client list, so the error is not surfaced as a page-level failure.
   const sites = useSites()
   const siteOptions = sites.data?.data ?? []
+  // Best-effort too: the surface that filled the cache, used only to explain an
+  // empty result. If it is unavailable, the page falls back to the generic hint.
+  const sync = useSyncStatus()
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -198,7 +216,7 @@ export default function ClientsPage() {
           hint={
             hasServerFilters
               ? 'The API answered successfully with zero rows for the current filters. Widen or clear them to see more.'
-              : 'The API answered successfully with zero clients. Clients appear once the sync worker has written them.'
+              : emptyCacheHint(sync.data)
           }
         />
       )}
