@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/goccy/go-yaml"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -33,6 +34,16 @@ const (
 	e2eSiteName     = "E2E HQ"
 	e2eDeviceTotal  = 3
 	e2eOfflineCount = 1 // devices whose state is OFFLINE in the fixture
+
+	// The active-client fixture (mockClients) and the identities the client
+	// vertical slice asserts in the API and in the cache table.
+	e2eClientTotal     = 2
+	e2eWirelessHost    = "laptop"
+	e2eWiredHost       = "workstation"
+	e2eWirelessMAC     = "aa:bb:cc:00:00:50"
+	e2eWirelessIP      = "10.0.0.50"
+	e2eWirelessUnifiID = "e2e-client-1"
+	e2eWiredUnifiID    = "e2e-client-2"
 )
 
 // stackOptions controls one API-under-test instance.
@@ -69,7 +80,9 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-// stack owns a running API process plus its mock controller.
+// stack owns a running API process plus its mock controller and a reader pool
+// for the Postgres cache, so a test can assert what the worker wrote without an
+// endpoint having to exist for it.
 type stack struct {
 	t       *testing.T
 	baseURL string
@@ -77,6 +90,7 @@ type stack struct {
 	cmd     *exec.Cmd
 	logs    *syncBuffer
 	client  *http.Client
+	db      *pgxpool.Pool
 }
 
 func startStack(t *testing.T, opts stackOptions) *stack {
@@ -154,6 +168,11 @@ func startStack(t *testing.T, opts stackOptions) *stack {
 		t.Fatalf("start api: %v", err)
 	}
 
+	db, err := pgxpool.New(context.Background(), opts.databaseURL)
+	if err != nil {
+		t.Fatalf("open a reader pool for the cache: %v", err)
+	}
+
 	s := &stack{
 		t:       t,
 		baseURL: "http://" + addr,
@@ -161,6 +180,7 @@ func startStack(t *testing.T, opts stackOptions) *stack {
 		cmd:     cmd,
 		logs:    logs,
 		client:  &http.Client{Timeout: 15 * time.Second},
+		db:      db,
 	}
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
@@ -168,6 +188,7 @@ func startStack(t *testing.T, opts stackOptions) *stack {
 		if mock != nil {
 			mock.Close()
 		}
+		db.Close()
 	})
 
 	s.waitForStatus("/api/v1/health", http.StatusOK, 20*time.Second)
@@ -393,12 +414,19 @@ func schemaForPath(path string) string {
 		return "SiteList"
 	case "/api/v1/devices":
 		return "DeviceList"
+	case "/api/v1/clients":
+		return "ClientList"
 	case "/api/v1/health":
 		return "Health"
 	case "/api/v1/ready":
 		return "Readiness"
 	case "/api/v1/sync/status":
 		return "SyncStatus"
+	}
+	// The one single-resource read the harness asserts. The action route under
+	// the same prefix is a POST and never reaches getJSON.
+	if strings.HasPrefix(base, "/api/v1/clients/") {
+		return "Client"
 	}
 	return ""
 }
@@ -415,6 +443,15 @@ type mockUnifi struct {
 	offline  bool
 	delay    time.Duration
 	requests int
+
+	// droppedClients holds the UniFi client ids the fixture console no longer
+	// reports as active, which is how a disconnect looks on the wire: Integration
+	// API v1 has no per-client state, a client that left simply stops appearing
+	// in the active list.
+	// clientsSince overrides the fixture connectedAt after a reconnect, so the
+	// console reports the time the client actually came back.
+	droppedClients map[string]bool
+	clientsSince   time.Time
 }
 
 func newMockUnifi(t *testing.T) *mockUnifi {
@@ -432,7 +469,7 @@ func newMockUnifi(t *testing.T) *mockUnifi {
 		m.respond(w, consolePage(mockDevices()))
 	})
 	mux.HandleFunc("GET /sites/{siteID}/clients", func(w http.ResponseWriter, r *http.Request) {
-		m.respond(w, consolePage(mockClients(r.PathValue("siteID"))))
+		m.respond(w, consolePage(m.activeClients(r.PathValue("siteID"))))
 	})
 	mux.HandleFunc("GET /sites/{siteID}/networks", func(w http.ResponseWriter, r *http.Request) {
 		m.respond(w, consolePage(mockNetworks(r.PathValue("siteID"))))
@@ -456,9 +493,26 @@ func newMockUnifi(t *testing.T) *mockUnifi {
 		m.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /__control/clients/{clientID}/absent", func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		if m.droppedClients == nil {
+			m.droppedClients = map[string]bool{}
+		}
+		m.droppedClients[r.PathValue("clientID")] = true
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /__control/clients/{clientID}/present", func(w http.ResponseWriter, r *http.Request) {
+		m.mu.Lock()
+		delete(m.droppedClients, r.PathValue("clientID"))
+		m.clientsSince = time.Now().UTC()
+		m.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("POST /__control/reset", func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		m.offline, m.delay = false, 0
+		m.droppedClients, m.clientsSince = nil, time.Time{}
 		m.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -470,6 +524,30 @@ func newMockUnifi(t *testing.T) *mockUnifi {
 func (m *mockUnifi) URL() string { return m.server.URL }
 func (m *mockUnifi) Close()      { m.server.Close() }
 func (m *mockUnifi) reset()      { m.control("reset") }
+
+// activeClients renders the fixture console's active-client list for a site,
+// minus the clients the test has told it to stop reporting.
+func (m *mockUnifi) activeClients(siteID string) []map[string]any {
+	m.mu.Lock()
+	dropped := make(map[string]bool, len(m.droppedClients))
+	for id := range m.droppedClients {
+		dropped[id] = true
+	}
+	since := m.clientsSince
+	m.mu.Unlock()
+
+	// Always an array, never null: the adapter reads a missing data array as
+	// drift and would then treat the site as "clients unsupported", which
+	// silently disables disconnect detection instead of exercising it.
+	fixture := mockClients(siteID, since)
+	active := make([]map[string]any, 0, len(fixture))
+	for _, client := range fixture {
+		if id, _ := client["id"].(string); !dropped[id] {
+			active = append(active, client)
+		}
+	}
+	return active
+}
 
 // requestCount counts fixture calls only, so the control endpoints never
 // distort the "the read path did not call UniFi" assertion.
@@ -542,12 +620,25 @@ func mockDevices() []map[string]any {
 	}
 }
 
-func mockClients(siteID string) []map[string]any {
+// mockClients is the site's active-client fixture. connectedSince, when set,
+// replaces each client's original connect time, which is what the console
+// reports after a reconnect.
+func mockClients(siteID string, connectedSince time.Time) []map[string]any {
+	connectedAt := func(original string) string {
+		if connectedSince.IsZero() {
+			return original
+		}
+		return connectedSince.Format(time.RFC3339)
+	}
 	return []map[string]any{
-		{"type": "WIRELESS", "id": "e2e-client-1", "name": "laptop", "connectedAt": "2026-10-06T15:00:00Z",
-			"ipAddress": "10.0.0.50", "macAddress": "aa:bb:cc:00:00:50", "uplinkDeviceId": "e2e-dev-1"},
-		{"type": "WIRED", "id": "e2e-client-2", "name": "workstation", "connectedAt": "2026-10-06T15:05:00Z",
-			"ipAddress": "10.0.0.51", "macAddress": "aa:bb:cc:00:00:51", "uplinkDeviceId": "e2e-dev-2"},
+		{"type": "WIRELESS", "id": e2eWirelessUnifiID, "name": e2eWirelessHost,
+			"connectedAt": connectedAt("2026-10-06T15:00:00Z"), "ipAddress": e2eWirelessIP,
+			"macAddress": e2eWirelessMAC, "uplinkDeviceId": "e2e-dev-1",
+			"access": map[string]any{"type": "DEFAULT"}},
+		{"type": "WIRED", "id": e2eWiredUnifiID, "name": e2eWiredHost,
+			"connectedAt": connectedAt("2026-10-06T15:05:00Z"), "ipAddress": "10.0.0.51",
+			"macAddress": "aa:bb:cc:00:00:51", "uplinkDeviceId": "e2e-dev-2",
+			"access": map[string]any{"type": "DEFAULT"}},
 	}
 }
 
