@@ -1,14 +1,14 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
+import ClientsPage from './pages/ClientsPage'
 import DevicesPage from './pages/DevicesPage'
 import SitesPage from './pages/SitesPage'
 
 /**
  * Application shell and routes.
  *
- * Only the two read-only views of the first vertical slice are routed. There is
- * deliberately no write UI: the write endpoints are gated off in phase 1
- * (`403 write_disabled`).
+ * Only read-only views are routed. There is deliberately no write UI: the
+ * write endpoints are gated off in phase 1 (`403 write_disabled`).
  */
 export default function App() {
   return (
@@ -22,6 +22,7 @@ export default function App() {
         <nav aria-label="Primary">
           <NavLink to="/sites">Sites</NavLink>
           <NavLink to="/devices">Devices</NavLink>
+          <NavLink to="/clients">Clients</NavLink>
         </nav>
       </header>
 
@@ -30,6 +31,7 @@ export default function App() {
           <Route path="/" element={<Navigate to="/sites" replace />} />
           <Route path="/sites" element={<SitesPage />} />
           <Route path="/devices" element={<DevicesPage />} />
+          <Route path="/clients" element={<ClientsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>
@@ -47,7 +49,7 @@ function NotFoundPage() {
     <section aria-labelledby="not-found-heading">
       <h2 id="not-found-heading">Page not found</h2>
       <p>
-        Use the navigation above to reach the sites or devices view.
+        Use the navigation above to reach the sites, devices, or clients view.
       </p>
     </section>
   )

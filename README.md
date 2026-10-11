@@ -189,21 +189,27 @@ there is no cache to be stale and the probe stays a database check.
 
 ## Web dashboard
 
-`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Its first
-vertical slice is implemented: a sites view (`/sites`) and a devices view
-(`/devices`), both built against `openapi/openapi.yaml`.
+`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Three
+views are implemented: sites (`/sites`), devices (`/devices`) and clients
+(`/clients`), all built against `openapi/openapi.yaml`.
 
 - **Types come from the contract.** `apps/web/src/api/schema.d.ts` is generated
   by `openapi-typescript` and committed; `npm run openapi:check` (and `make
   openapi-types` in CI) fails when it drifts from the contract. `src/api/types.ts`
   only aliases the generated types, so no API type is maintained twice.
-- **Honest states.** `/sites` and `/devices` are served from the local cache (ZENI-15).
+- **Honest states.** `/sites`, `/devices` and `/clients` are served from the
+  local cache (ZENI-15; `/clients` lands with the sync worker in ZENI-23).
   The views render the API's `{ code, message, details }` verbatim — `request_id`
   included — and say plainly when a 404 means "contract-only, not served yet", so
   the UI stays truthful against a build that does not serve them. No fabricated
   rows, no endless spinner.
 - **Filtering is server-side.** The devices view sends `site_id`, `status`,
-  `page` and `page_size`; the browser never downloads the inventory to filter it.
+  `page` and `page_size`; the clients view sends `site_id`, `connected` and
+  `client_type` the same way. The browser never downloads a table to filter it
+  itself — with one deliberate exception: the clients view's free-text search
+  box, because the contract exposes no hostname/IP filter for clients (only an
+  exact `mac` match). It narrows only the rows already loaded for the current
+  page, and the UI says so rather than implying a full-dataset search.
 - **Read-only.** There is no write UI. The phase-1 action endpoints carry
   `x-status: proposed-gated` in the contract and are not registered by the API at
   all yet, so they answer 404 today; the contract documents `403 forbidden` with

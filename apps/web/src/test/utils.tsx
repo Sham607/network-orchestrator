@@ -4,7 +4,7 @@ import type { ReactElement } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { vi } from 'vitest'
 
-import type { DeviceList, ErrorBody, SiteList } from '../api/types'
+import type { ClientList, DeviceList, ErrorBody, SiteList } from '../api/types'
 
 /** Render a component inside the providers the app supplies at runtime. */
 export function renderWithProviders(
@@ -150,6 +150,53 @@ export const deviceListFixture: DeviceList = {
 }
 
 export const emptyDeviceListFixture: DeviceList = {
+  data: [],
+  pagination: { page: 1, page_size: 25, total: 0, total_pages: 0 },
+}
+
+export const clientListFixture: ClientList = {
+  data: [
+    {
+      id: '5a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c70',
+      site_id: '1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c',
+      mac: 'aa:bb:cc:dd:ee:10',
+      hostname: 'ivan-laptop',
+      ip_address: '10.20.0.42',
+      client_type: 'WIRELESS',
+      access_type: 'DEFAULT',
+      uplink_device_id: '2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d',
+      ssid: null,
+      signal_dbm: null,
+      is_connected: true,
+      connected_at: '2026-10-06T14:00:00Z',
+      disconnected_at: null,
+      first_seen: '2026-09-01T08:00:00Z',
+      last_seen: '2026-10-06T15:39:10Z',
+      synced_at: '2026-10-06T15:39:10Z',
+    },
+    {
+      id: '6a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c71',
+      site_id: '1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c',
+      mac: null,
+      hostname: null,
+      ip_address: null,
+      client_type: 'WIRED',
+      access_type: null,
+      uplink_device_id: null,
+      ssid: null,
+      signal_dbm: null,
+      is_connected: false,
+      connected_at: null,
+      disconnected_at: '2026-10-05T11:00:00Z',
+      first_seen: '2026-08-01T08:00:00Z',
+      last_seen: '2026-10-05T11:00:00Z',
+      synced_at: '2026-10-06T15:39:10Z',
+    },
+  ],
+  pagination: { page: 1, page_size: 25, total: 2, total_pages: 1 },
+}
+
+export const emptyClientListFixture: ClientList = {
   data: [],
   pagination: { page: 1, page_size: 25, total: 0, total_pages: 0 },
 }

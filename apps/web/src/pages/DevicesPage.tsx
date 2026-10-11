@@ -6,20 +6,10 @@ import type { DeviceListQuery } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
+import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
 const DEFAULT_PAGE_SIZE = 25
-
-function positiveInt(raw: string | null, fallback: number): number {
-  const parsed = Number(raw)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
-}
-
-/** Only page sizes the contract allows; anything else falls back to the default. */
-function pageSizeFrom(raw: string | null): number {
-  const parsed = Number(raw)
-  return (PAGE_SIZES as readonly number[]).includes(parsed) ? parsed : DEFAULT_PAGE_SIZE
-}
 
 /**
  * Devices list, read from `GET /api/v1/devices`.
@@ -32,7 +22,7 @@ export default function DevicesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
   const page = positiveInt(searchParams.get('page'), 1)
-  const pageSize = pageSizeFrom(searchParams.get('page_size'))
+  const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
   const status = (searchParams.get('status') ?? '').trim()
 

@@ -8,9 +8,11 @@ import type { components, paths } from './schema'
 export type Site = components['schemas']['Site']
 export type Device = components['schemas']['Device']
 export type Radio = components['schemas']['Radio']
+export type Client = components['schemas']['Client']
 export type Pagination = components['schemas']['Pagination']
 export type SiteList = components['schemas']['SiteList']
 export type DeviceList = components['schemas']['DeviceList']
+export type ClientList = components['schemas']['ClientList']
 
 /** The single error body shape every endpoint returns: `{ code, message, details }`. */
 export type ErrorBody = components['schemas']['Error']
@@ -21,3 +23,4 @@ export type ErrorCode = ErrorBody['code']
 // `page_size` (not `limit`) are enforced by the type, not by convention.
 export type SiteListQuery = NonNullable<paths['/sites']['get']['parameters']['query']>
 export type DeviceListQuery = NonNullable<paths['/devices']['get']['parameters']['query']>
+export type ClientListQuery = NonNullable<paths['/clients']['get']['parameters']['query']>
