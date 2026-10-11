@@ -44,6 +44,10 @@ const (
 	e2eWirelessIP      = "10.0.0.50"
 	e2eWirelessUnifiID = "e2e-client-1"
 	e2eWiredUnifiID    = "e2e-client-2"
+
+	e2eNetworkTotal = 2
+	e2eDefaultNetID = "e2e-net-1"
+	e2eGuestNetID   = "e2e-net-2"
 )
 
 // stackOptions controls one API-under-test instance.
@@ -416,6 +420,8 @@ func schemaForPath(path string) string {
 		return "DeviceList"
 	case "/api/v1/clients":
 		return "ClientList"
+	case "/api/v1/networks":
+		return "NetworkList"
 	case "/api/v1/health":
 		return "Health"
 	case "/api/v1/ready":
@@ -423,10 +429,13 @@ func schemaForPath(path string) string {
 	case "/api/v1/sync/status":
 		return "SyncStatus"
 	}
-	// The one single-resource read the harness asserts. The action route under
-	// the same prefix is a POST and never reaches getJSON.
+	// The single-resource reads the harness asserts. The action routes under
+	// the same prefixes are POSTs and never reach getJSON.
 	if strings.HasPrefix(base, "/api/v1/clients/") {
 		return "Client"
+	}
+	if strings.HasPrefix(base, "/api/v1/networks/") {
+		return "Network"
 	}
 	return ""
 }
@@ -644,7 +653,15 @@ func mockClients(siteID string, connectedSince time.Time) []map[string]any {
 
 func mockNetworks(siteID string) []map[string]any {
 	return []map[string]any{
-		{"management": "GATEWAY", "id": "e2e-net-1", "name": "Default", "enabled": true,
-			"vlanId": 1, "default": true},
+		{
+			"management": "GATEWAY", "id": "e2e-net-1", "name": "Default", "enabled": true,
+			"vlanId": 1, "default": true,
+			"metadata": map[string]any{"origin": "SYSTEM_DEFINED", "configurable": true},
+		},
+		{
+			"management": "SWITCH", "id": "e2e-net-2", "name": "Guest", "enabled": false,
+			"vlanId": 20, "default": false,
+			"metadata": map[string]any{"origin": "USER_DEFINED", "configurable": true},
+		},
 	}
 }
