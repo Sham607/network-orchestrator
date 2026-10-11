@@ -44,6 +44,15 @@ export interface paths {
          *     gone stale (`details.reason: cache_stale`). The database is checked
          *     first, so the two 503s stay distinguishable (ADR-004).
          *
+         *     A stale cache is normally `unifi_unreachable`: the controller's silence is
+         *     what stops the cache from refreshing. It becomes `service_unavailable`
+         *     with `details.reason: cache_not_fresh` only when there is positive
+         *     evidence that our own side failed — the worker's last run failed with
+         *     `error_kind: internal_error`, which by definition did not come from the
+         *     controller — and `details` then carries that `last_error_kind`. A
+         *     controller that merely looks reachable is not evidence: `unifi.reachable`
+         *     is refreshed once per cycle, so it lags (ADR-007).
+         *
          *     Staleness gating applies only when `UNIFI_ENABLED=true`; with UniFi
          *     disabled the probe is a database check alone and `stale` /
          *     `last_successful_sync_at` are omitted from the 200 response.

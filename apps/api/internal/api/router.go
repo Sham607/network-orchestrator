@@ -86,10 +86,13 @@ func handleHealth(w http.ResponseWriter, _ *http.Request) {
 // handleReady is a readiness probe. It requires a reachable database and, when
 // UniFi is enabled, a cache fresher than SYNC_STALE_AFTER (ADR-003 §6).
 //
-// The database is checked first, so the two failures stay distinguishable: a
-// stale cache is 503 unifi_unreachable (the controller is the broken
-// dependency), an unreachable database is 503 service_unavailable. Neither is
-// 500 internal_error — that code means an unexpected bug (ADR-004).
+// The database is checked first, so the failures stay distinguishable: an
+// unreachable database is 503 service_unavailable (details.reason
+// database_unreachable), a stale cache is 503 unifi_unreachable (cache_stale) —
+// unless the worker recorded a failure of our own (cache_not_fresh, 503
+// service_unavailable), because then the controller is not the broken
+// dependency. None of them is 500 internal_error — that code means an
+// unexpected bug (ADR-004, ADR-007).
 func handleReady(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if deps.DB != nil {
@@ -113,12 +116,35 @@ func handleReady(deps Dependencies) http.HandlerFunc {
 
 		if deps.Config.UnifiEnabled {
 			if status.Stale {
-				deps.Logger.Warn("readiness check failed", "module", "api", "event", "ready_failed", "reason", "cache_stale")
-				details := map[string]any{"reason": "cache_stale", "last_successful_sync_at": nil}
+				// A stale cache blames the controller by default: its silence is what
+				// stops the cache from refreshing, and ADR-004 locked that answer.
+				// Only positive evidence that our own side failed moves the blame —
+				// the worker recorded a failure that did not come from the adapter.
+				//
+				// Reachability alone is not that evidence. It is refreshed once per
+				// cycle, so it lags: a controller that just went offline is still
+				// reported as reachable until the next probe fails, which leaves a
+				// window where a stale cache sits under a "reachable" controller
+				// (ADR-007).
+				ourFailure := status.Reachable && status.LastErrorKind == inventory.ErrKindInternal
+				code, reason, message := CodeUnifiUnreachable, "cache_stale", "the UniFi cache is stale"
+				if ourFailure {
+					code = CodeServiceUnavailable
+					reason = "cache_not_fresh"
+					message = "the cache is stale and the sync worker could not refresh it"
+				}
+				details := map[string]any{
+					"reason":                  reason,
+					"last_successful_sync_at": nil,
+				}
 				if status.LastSuccessfulSyncAt != nil {
 					details["last_successful_sync_at"] = formatTime(*status.LastSuccessfulSyncAt)
 				}
-				writeError(w, r, CodeUnifiUnreachable, "the UniFi cache is stale", details)
+				if ourFailure {
+					details["last_error_kind"] = status.LastErrorKind
+				}
+				deps.Logger.Warn("readiness check failed", "module", "api", "event", "ready_failed", "reason", reason, "unifi_reachable", status.Reachable, "last_error_kind", status.LastErrorKind)
+				writeError(w, r, code, message, details)
 				return
 			}
 			body["stale"] = false

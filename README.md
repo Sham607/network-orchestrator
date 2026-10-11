@@ -199,12 +199,18 @@ alerting unable to tell "Postgres is restarting" from "we shipped a bug".
 regression to `500` now fails CI.
 
 With `UNIFI_ENABLED=true`, readiness additionally requires a cache fresher than
-`SYNC_STALE_AFTER` (ADR-003 §6). A stale cache fails with **`503
-unifi_unreachable`** and `details.reason: cache_stale`: the controller is the
-dependency that is broken, so naming it is what tells an operator whether to
-look at Postgres or at UniFi. The database is checked first, so a simultaneous
-outage is always reported as `service_unavailable`. With `UNIFI_ENABLED=false`
-there is no cache to be stale and the probe stays a database check.
+`SYNC_STALE_AFTER` (ADR-003 §6). A stale cache is attributed to the dependency
+that is actually broken (ADR-007). By default that is the controller — its
+silence is what stops the cache from refreshing — so it fails with **`503
+unifi_unreachable`** and `details.reason: cache_stale`. It becomes **`503
+service_unavailable`** with `details.reason: cache_not_fresh` only when there is
+positive evidence that our own side failed: the worker's last run failed with
+`error_kind: internal_error`, which never comes from the adapter. `details` then
+carries that `last_error_kind`, so "an unmigrated schema" is distinguishable
+from "the controller is down". A controller that merely looks reachable is not
+that evidence — `unifi.reachable` is refreshed once per cycle, so it lags. The
+database is checked first. With `UNIFI_ENABLED=false` there is no cache to be
+stale and the probe stays a database check.
 
 ## Web dashboard
 

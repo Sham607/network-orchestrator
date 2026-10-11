@@ -24,8 +24,11 @@ const (
 	// finalWriteTimeout bounds the sync_runs/audit write of a finished cycle so
 	// the record survives the shutdown that cancelled the cycle's context.
 	finalWriteTimeout = 5 * time.Second
-	// errKindInternal labels a failure that did not come from the adapter.
-	errKindInternal = "internal_error"
+	// ErrKindInternal labels a failure that did not come from the adapter, which
+	// makes it the one kind that is evidence against our own side rather than
+	// against the controller. It is exported because readiness branches on it
+	// (ADR-007).
+	ErrKindInternal = "internal_error"
 )
 
 // WorkerConfig configures a Worker. Client and Repo are required.
@@ -306,7 +309,7 @@ func (w *Worker) finish(ctx context.Context, run *SyncRun) {
 		ts := run.FinishedAt
 		w.lastOK = &ts
 	case RunFailed:
-		if run.ErrorKind == errKindInternal {
+		if run.ErrorKind == ErrKindInternal {
 			// A failure on our side (the database is down, say) must not trip the
 			// breaker. It exists to stop hammering an unreachable controller, and
 			// counting it would keep syncing suspended for the whole cooldown
@@ -409,9 +412,9 @@ func classify(err error) (kind, message string) {
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		return errKindInternal, "database error (SQLSTATE " + pgErr.Code + ")"
+		return ErrKindInternal, "database error (SQLSTATE " + pgErr.Code + ")"
 	}
-	return errKindInternal, "sync cycle failed: internal error"
+	return ErrKindInternal, "sync cycle failed: internal error"
 }
 
 func isUnsupported(err error) bool {

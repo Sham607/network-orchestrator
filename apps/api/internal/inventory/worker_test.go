@@ -330,8 +330,8 @@ func TestClassifyKeepsTheSQLStateAndDropsTheDriverText(t *testing.T) {
 
 	kind, message := classify(fmt.Errorf("inventory: upsert site: %w", pgErr))
 
-	if kind != errKindInternal {
-		t.Fatalf("kind = %q, want %q", kind, errKindInternal)
+	if kind != ErrKindInternal {
+		t.Fatalf("kind = %q, want %q", kind, ErrKindInternal)
 	}
 	if message != "database error (SQLSTATE 42P01)" {
 		t.Fatalf("message = %q, want the SQLSTATE form", message)
@@ -346,8 +346,8 @@ func TestClassifyKeepsTheSQLStateAndDropsTheDriverText(t *testing.T) {
 func TestClassifyLeavesNonDatabaseInternalsOpaque(t *testing.T) {
 	kind, message := classify(errors.New("dial tcp 10.0.0.5:8080: connect: connection refused"))
 
-	if kind != errKindInternal {
-		t.Fatalf("kind = %q, want %q", kind, errKindInternal)
+	if kind != ErrKindInternal {
+		t.Fatalf("kind = %q, want %q", kind, ErrKindInternal)
 	}
 	if message != "sync cycle failed: internal error" {
 		t.Fatalf("message = %q, want the opaque form", message)
@@ -434,8 +434,8 @@ func TestOwnOutageDoesNotTripTheBreaker(t *testing.T) {
 
 	for i := 1; i <= breakerThreshold+1; i++ {
 		run := h.worker.runCycle(ctx, TriggerSchedule)
-		if run.Status != RunFailed || run.ErrorKind != errKindInternal {
-			t.Fatalf("cycle %d = %q/%q, want %q/%q", i, run.Status, run.ErrorKind, RunFailed, errKindInternal)
+		if run.Status != RunFailed || run.ErrorKind != ErrKindInternal {
+			t.Fatalf("cycle %d = %q/%q, want %q/%q", i, run.Status, run.ErrorKind, RunFailed, ErrKindInternal)
 		}
 	}
 	status := h.worker.Status()
@@ -573,8 +573,8 @@ func TestInternalErrorsAreNotEchoed(t *testing.T) {
 
 	run := h.worker.runCycle(context.Background(), TriggerStartup)
 
-	if run.ErrorKind != errKindInternal {
-		t.Fatalf("error_kind = %q, want %q", run.ErrorKind, errKindInternal)
+	if run.ErrorKind != ErrKindInternal {
+		t.Fatalf("error_kind = %q, want %q", run.ErrorKind, ErrKindInternal)
 	}
 	if strings.Contains(run.ErrorMessage, "hunter2") {
 		t.Fatalf("error_message echoed a connection string: %q", run.ErrorMessage)

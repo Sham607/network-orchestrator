@@ -176,6 +176,103 @@ func TestReadyDistinguishesAStaleCacheFromADeadDatabase(t *testing.T) {
 	}
 }
 
+func TestReadyBlamesOurOwnSideWhenOurWritesFail(t *testing.T) {
+	cfg := config.Config{UnifiEnabled: true, UnifiMode: config.UnifiModeCloud, SyncStaleAfter: 3 * time.Minute}
+	synced := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)
+
+	// The controller answers and the cache is stale because the worker's last
+	// failure came from our own side (an unmigrated schema made every write
+	// fail). The probe must name the service, not UniFi, and hand over the
+	// evidence (ADR-007).
+	rr := httptest.NewRecorder()
+	testRouterWith(t, cfg, fakeDB{}, fakeStatus{status: inventory.Status{
+		Stale:                true,
+		StaleAfter:           3 * time.Minute,
+		Reachable:            true,
+		Surface:              inventory.SourceCloud,
+		LastSuccessfulSyncAt: &synced,
+		LastErrorKind:        "internal_error",
+	}}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want %d (body: %s)", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	var body ErrorBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Code != CodeServiceUnavailable {
+		t.Fatalf("code = %q, want %q (our own writes failed, so the controller is not the broken dependency)", body.Code, CodeServiceUnavailable)
+	}
+	if body.Details["reason"] != "cache_not_fresh" {
+		t.Fatalf("details.reason = %v, want %q", body.Details["reason"], "cache_not_fresh")
+	}
+	if body.Details["last_error_kind"] != "internal_error" {
+		t.Fatalf("details.last_error_kind = %v, want %q", body.Details["last_error_kind"], "internal_error")
+	}
+	if body.Details["last_successful_sync_at"] != synced.Format(time.RFC3339) {
+		t.Fatalf("details.last_successful_sync_at = %v, want %q", body.Details["last_successful_sync_at"], synced.Format(time.RFC3339))
+	}
+}
+
+func TestReadyBlamesUnifiWhileReachabilityHasNotCaughtUp(t *testing.T) {
+	cfg := config.Config{UnifiEnabled: true, UnifiMode: config.UnifiModeCloud, SyncStaleAfter: 3 * time.Minute}
+
+	// The window TestControllerGoingOfflineMakesTheCacheStale lands in: the last
+	// cycle still succeeded, so the cache simply aged past SYNC_STALE_AFTER, and
+	// `unifi.reachable` has not been refreshed since before the controller went
+	// offline. Reachability lags by a cycle, so it is not evidence that UniFi is
+	// healthy — and there is no failure of ours to point at either, which leaves
+	// ADR-004's answer standing (ADR-007).
+	rr := httptest.NewRecorder()
+	testRouterWith(t, cfg, fakeDB{}, fakeStatus{status: inventory.Status{
+		Stale:      true,
+		StaleAfter: 3 * time.Minute,
+		Reachable:  true,
+		Surface:    inventory.SourceCloud,
+	}}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want %d (body: %s)", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	var body ErrorBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Code != CodeUnifiUnreachable || body.Details["reason"] != "cache_stale" {
+		t.Fatalf("code/reason = %q/%v, want %q/cache_stale", body.Code, body.Details["reason"], CodeUnifiUnreachable)
+	}
+	if _, ok := body.Details["last_error_kind"]; ok {
+		t.Fatalf("details.last_error_kind = %v, want it absent when nothing has failed", body.Details["last_error_kind"])
+	}
+}
+
+func TestReadyStillBlamesUnifiWhenTheControllerIsSilent(t *testing.T) {
+	cfg := config.Config{UnifiEnabled: true, UnifiMode: config.UnifiModeCloud, SyncStaleAfter: 3 * time.Minute}
+
+	// Reachability decides, not the last error kind: our own side failed earlier
+	// and now the controller is silent too, so UniFi is the live problem.
+	rr := httptest.NewRecorder()
+	testRouterWith(t, cfg, fakeDB{}, fakeStatus{status: inventory.Status{
+		Stale:         true,
+		StaleAfter:    3 * time.Minute,
+		Reachable:     false,
+		Surface:       inventory.SourceCloud,
+		LastErrorKind: "internal_error",
+	}}).ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/ready", nil))
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("ready status = %d, want %d (body: %s)", rr.Code, http.StatusServiceUnavailable, rr.Body.String())
+	}
+	var body ErrorBody
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	if body.Code != CodeUnifiUnreachable || body.Details["reason"] != "cache_stale" {
+		t.Fatalf("code/reason = %q/%v, want %q/cache_stale", body.Code, body.Details["reason"], CodeUnifiUnreachable)
+	}
+}
+
 func TestReadySucceedsWhenTheCacheIsFresh(t *testing.T) {
 	cfg := config.Config{UnifiEnabled: true, UnifiMode: config.UnifiModeCloud, SyncStaleAfter: 3 * time.Minute}
 	synced := time.Date(2026, 2, 1, 9, 0, 0, 0, time.UTC)

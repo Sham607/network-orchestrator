@@ -66,6 +66,8 @@ PLAYWRIGHT_CHROMIUM_PATH=/usr/bin/chromium make e2e-web
 | Cache boundary | a read is answered from Postgres, never calls the controller, and does not block on a slow controller | `TestReadsDoNotCallTheController` |
 | Degradation · database down | `/ready` and the lists → `503 service_unavailable` (`details.reason: database_unreachable`); `/health` stays 200; `/sync/status` still answers | `TestReadyFailsWhenDatabaseUnreachable` |
 | Degradation · controller down from boot | `/ready` and the lists → `503 unifi_unreachable` (`cache_stale`), never `service_unavailable` | `TestReadyFailsAsUnifiUnreachableWhenCacheStale` |
+| Degradation · our own writes fail while the controller answers | `/ready` → `503 service_unavailable` (`cache_not_fresh` + `last_error_kind: internal_error`), never `unifi_unreachable` | `TestReadyBlamesOurOwnSideWhenOurWritesFail` (unit, `apps/api/internal/api`) |
+| Degradation · stale cache before reachability catches up | `/ready` → `503 unifi_unreachable` (`cache_stale`) while `unifi.reachable` is still true and the last run succeeded | `TestReadyBlamesUnifiWhileReachabilityHasNotCaughtUp` (unit, `apps/api/internal/api`) |
 | Degradation · healthy → offline | fresh 200 first; once the cache ages past `SYNC_STALE_AFTER`, the documented 503 appears and `/health` stays 200 | `TestControllerGoingOfflineMakesTheCacheStale` |
 | Read-only · route table | the `chi` route inventory is exactly the five GET routes (unit test, `apps/api/internal/api`) | `TestRouterRegistersOnlyReadRoutes` |
 | Read-only · over HTTP | the gated action routes reject writes, and no write verb is accepted on any route | `TestWriteActionRoutesRejectWrites`, `TestNoWriteMethodIsAccepted` |
