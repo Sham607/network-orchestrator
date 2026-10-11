@@ -78,8 +78,11 @@ type Network struct {
 	SiteID       string
 	Name         string
 	VLAN         int
-	SecurityMode string
+	Management   string
 	Enabled      bool
+	IsDefault    bool
+	Origin       string
+	Configurable bool
 	Raw          json.RawMessage
 }
 

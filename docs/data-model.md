@@ -238,9 +238,9 @@ Konsekuensinya:
   synced_at, source)`.
 - **Tindak lanjut untuk ZENI-6:** `GET /networks` pada kontrak OpenAPI harus
   memetakan ke tabel `networks` (VLAN/name), dan **tidak** menjanjikan SSID /
-  security mode. Field `Device`/`Network.SecurityMode` di `internal/unifi`
-  (stub ADR-003) saat ini akan selalu kosong dari v1 — perlu ditandai opsional
-  atau diisi saat `wifi_broadcasts` ada.
+  security mode. Field stub `Network.SecurityMode` di `internal/unifi`
+  telah dihapus pada ZENI-31 karena tidak pernah terisi dari v1, tidak memiliki
+  kolom di tabel `networks`, dan tidak dijanjikan pada kontrak `openapi.yaml`.
 
 ---
 

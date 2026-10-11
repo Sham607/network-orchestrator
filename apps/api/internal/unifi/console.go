@@ -71,7 +71,7 @@ type consoleNetworkEntry struct {
 	Name       string `json:"name"`
 	Enabled    bool   `json:"enabled"`
 	VLANID     int    `json:"vlanId"`
-	Metadata   struct {
+	Metadata   *struct {
 		Origin       string `json:"origin"`
 		Configurable bool   `json:"configurable"`
 	} `json:"metadata"`
@@ -186,14 +186,23 @@ func (c *consoleClient) ListNetworks(ctx context.Context, siteID string) ([]Netw
 	}
 	out := make([]Network, 0, len(items))
 	for _, n := range items {
+		var origin string
+		var configurable bool
+		if n.Metadata != nil {
+			origin = n.Metadata.Origin
+			configurable = n.Metadata.Configurable
+		}
 		out = append(out, Network{
-			ID:      n.ID,
-			SiteID:  siteID,
-			Name:    n.Name,
-			VLAN:    n.VLANID,
-			Enabled: n.Enabled,
-			Raw:     mustRaw(n),
-			// SecurityMode stays empty: v1 does not expose it.
+			ID:           n.ID,
+			SiteID:       siteID,
+			Name:         n.Name,
+			VLAN:         n.VLANID,
+			Management:   n.Management,
+			Enabled:      n.Enabled,
+			IsDefault:    n.Default,
+			Origin:       origin,
+			Configurable: configurable,
+			Raw:          mustRaw(n),
 		})
 	}
 	return out, nil

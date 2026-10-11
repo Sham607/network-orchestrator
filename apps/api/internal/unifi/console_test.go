@@ -80,6 +80,12 @@ func TestConsoleHealthSitesDevicesNetworks(t *testing.T) {
 	if len(networks) != 2 || networks[0].VLAN != 1 || !networks[0].Enabled || networks[1].Name != "Guest" {
 		t.Fatalf("unexpected networks: %+v", networks)
 	}
+	if networks[0].Management != "GATEWAY" || !networks[0].IsDefault || networks[0].Origin != "SYSTEM_DEFINED" || !networks[0].Configurable {
+		t.Fatalf("unexpected network[0] completeness fields: %+v", networks[0])
+	}
+	if networks[1].Management != "SWITCH" || networks[1].IsDefault || networks[1].Origin != "USER_DEFINED" || !networks[1].Configurable {
+		t.Fatalf("unexpected network[1] completeness fields: %+v", networks[1])
+	}
 }
 
 func TestConsoleClientsPagination(t *testing.T) {
@@ -199,5 +205,59 @@ func TestNormalizeMAC(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("normalizeMAC(%q) = %q, want %q", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestConsoleListNetworksParsesADR001Payload(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// ADR-001 payload with two networks: one with metadata, one without metadata
+		_, _ = w.Write([]byte(`{
+			"offset": 0,
+			"limit": 200,
+			"count": 2,
+			"totalCount": 2,
+			"data": [
+				{
+					"management": "GATEWAY",
+					"id": "net-adr-1",
+					"name": "Corporate",
+					"enabled": true,
+					"vlanId": 10,
+					"metadata": {"origin": "SYSTEM_DEFINED", "configurable": true},
+					"default": true
+				},
+				{
+					"management": "SWITCH",
+					"id": "net-adr-2",
+					"name": "IoT",
+					"enabled": false,
+					"vlanId": 30,
+					"default": false
+				}
+			]
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestConsole(t, srv)
+
+	networks, err := c.ListNetworks(context.Background(), "csite-1")
+	if err != nil {
+		t.Fatalf("ListNetworks: %v", err)
+	}
+	if len(networks) != 2 {
+		t.Fatalf("got %d networks, want 2", len(networks))
+	}
+
+	n1 := networks[0]
+	if n1.ID != "net-adr-1" || n1.Name != "Corporate" || n1.VLAN != 10 || !n1.Enabled ||
+		n1.Management != "GATEWAY" || !n1.IsDefault || n1.Origin != "SYSTEM_DEFINED" || !n1.Configurable {
+		t.Fatalf("unexpected n1: %+v", n1)
+	}
+
+	n2 := networks[1]
+	if n2.ID != "net-adr-2" || n2.Name != "IoT" || n2.VLAN != 30 || n2.Enabled ||
+		n2.Management != "SWITCH" || n2.IsDefault || n2.Origin != "" || n2.Configurable {
+		t.Fatalf("unexpected n2 (metadata absent should yield zero values): %+v", n2)
 	}
 }

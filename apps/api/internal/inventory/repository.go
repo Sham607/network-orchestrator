@@ -117,15 +117,23 @@ VALUES ($1::uuid, $2::uuid, $3, $4)`
 
 const upsertNetwork = `
 INSERT INTO networks (
-    site_id, unifi_network_id, name, vlan_id, enabled, source, raw, synced_at
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    site_id, unifi_network_id, name, vlan_id, management, enabled,
+    is_default, origin, configurable, source, raw, synced_at
+) VALUES (
+    $1, $2, $3, $4, NULLIF($5, ''), $6,
+    $7, NULLIF($8, ''), $9, $10, $11, $12
+)
 ON CONFLICT (site_id, unifi_network_id) DO UPDATE SET
-    name       = EXCLUDED.name,
-    vlan_id    = EXCLUDED.vlan_id,
-    enabled    = EXCLUDED.enabled,
-    source     = EXCLUDED.source,
-    raw        = EXCLUDED.raw,
-    synced_at  = EXCLUDED.synced_at`
+    name         = EXCLUDED.name,
+    vlan_id      = EXCLUDED.vlan_id,
+    management   = EXCLUDED.management,
+    enabled      = EXCLUDED.enabled,
+    is_default   = EXCLUDED.is_default,
+    origin       = EXCLUDED.origin,
+    configurable = EXCLUDED.configurable,
+    source       = EXCLUDED.source,
+    raw          = EXCLUDED.raw,
+    synced_at    = EXCLUDED.synced_at`
 
 const insertSyncRun = `
 INSERT INTO sync_runs (
@@ -275,7 +283,8 @@ func (r *PostgresRepository) ApplySite(ctx context.Context, snap SiteSnapshot) e
 			continue
 		}
 		if _, err := tx.Exec(ctx, upsertNetwork,
-			siteID, n.ID, n.Name, optionalVLAN(n.VLAN), n.Enabled,
+			siteID, n.ID, n.Name, optionalVLAN(n.VLAN), optionalText(n.Management), n.Enabled,
+			n.IsDefault, optionalText(n.Origin), n.Configurable,
 			snap.Source, jsonPayload(n.Raw), snap.SyncedAt,
 		); err != nil {
 			return fmt.Errorf("inventory: upsert network %s: %w", n.ID, err)

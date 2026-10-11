@@ -588,3 +588,118 @@ func TestPostgresClientPresenceTransitions(t *testing.T) {
 		t.Fatalf("client_events after reconnect = %d, want 4", eventsCount)
 	}
 }
+
+func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
+	pool := testPool(t)
+	repo := NewPostgresRepository(pool)
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	snap := SiteSnapshot{
+		Site: unifi.Site{
+			ID:   "site-net-test",
+			Name: "Network Test Site",
+			Desc: "default",
+		},
+		Networks: []unifi.Network{
+			{
+				ID:           "net-10",
+				Name:         "Corporate",
+				VLAN:         10,
+				Management:   "GATEWAY",
+				Enabled:      true,
+				IsDefault:    true,
+				Origin:       "SYSTEM_DEFINED",
+				Configurable: true,
+				Raw:          []byte(`{"test": 1}`),
+			},
+			{
+				ID:           "net-20",
+				Name:         "Guest",
+				VLAN:         20,
+				Management:   "SWITCH",
+				Enabled:      false,
+				IsDefault:    false,
+				Origin:       "",
+				Configurable: false,
+				Raw:          []byte(`{"test": 2}`),
+			},
+		},
+		SyncedAt: now,
+		Source:   "console",
+	}
+
+	if err := repo.ApplySite(ctx, snap); err != nil {
+		t.Fatalf("ApplySite: %v", err)
+	}
+
+	type rowResult struct {
+		Name         string
+		VlanID       *int
+		Management   *string
+		Enabled      *bool
+		IsDefault    *bool
+		Origin       *string
+		Configurable *bool
+	}
+
+	var r1 rowResult
+	if err := pool.QueryRow(ctx, `
+		SELECT name, vlan_id, management, enabled, is_default, origin, configurable
+		FROM networks WHERE unifi_network_id = 'net-10'
+	`).Scan(&r1.Name, &r1.VlanID, &r1.Management, &r1.Enabled, &r1.IsDefault, &r1.Origin, &r1.Configurable); err != nil {
+		t.Fatalf("query net-10: %v", err)
+	}
+
+	if r1.Name != "Corporate" || r1.VlanID == nil || *r1.VlanID != 10 ||
+		r1.Management == nil || *r1.Management != "GATEWAY" ||
+		r1.Enabled == nil || !*r1.Enabled ||
+		r1.IsDefault == nil || !*r1.IsDefault ||
+		r1.Origin == nil || *r1.Origin != "SYSTEM_DEFINED" ||
+		r1.Configurable == nil || !*r1.Configurable {
+		t.Fatalf("unexpected net-10 row: %+v", r1)
+	}
+
+	var r2 rowResult
+	if err := pool.QueryRow(ctx, `
+		SELECT name, vlan_id, management, enabled, is_default, origin, configurable
+		FROM networks WHERE unifi_network_id = 'net-20'
+	`).Scan(&r2.Name, &r2.VlanID, &r2.Management, &r2.Enabled, &r2.IsDefault, &r2.Origin, &r2.Configurable); err != nil {
+		t.Fatalf("query net-20: %v", err)
+	}
+
+	if r2.Name != "Guest" || r2.VlanID == nil || *r2.VlanID != 20 ||
+		r2.Management == nil || *r2.Management != "SWITCH" ||
+		r2.Enabled == nil || *r2.Enabled ||
+		r2.IsDefault == nil || *r2.IsDefault ||
+		r2.Origin != nil ||
+		r2.Configurable == nil || *r2.Configurable {
+		t.Fatalf("unexpected net-20 row: %+v", r2)
+	}
+
+	// Test ON CONFLICT DO UPDATE: subsequent sync updates the fields
+	snap2 := snap
+	snap2.Networks[1].Management = "GATEWAY"
+	snap2.Networks[1].Origin = "USER_DEFINED"
+	snap2.Networks[1].Configurable = true
+	snap2.Networks[1].Enabled = true
+	snap2.SyncedAt = now.Add(time.Minute)
+
+	if err := repo.ApplySite(ctx, snap2); err != nil {
+		t.Fatalf("ApplySite update: %v", err)
+	}
+
+	if err := pool.QueryRow(ctx, `
+		SELECT name, vlan_id, management, enabled, is_default, origin, configurable
+		FROM networks WHERE unifi_network_id = 'net-20'
+	`).Scan(&r2.Name, &r2.VlanID, &r2.Management, &r2.Enabled, &r2.IsDefault, &r2.Origin, &r2.Configurable); err != nil {
+		t.Fatalf("query updated net-20: %v", err)
+	}
+
+	if r2.Management == nil || *r2.Management != "GATEWAY" ||
+		r2.Enabled == nil || !*r2.Enabled ||
+		r2.Origin == nil || *r2.Origin != "USER_DEFINED" ||
+		r2.Configurable == nil || !*r2.Configurable {
+		t.Fatalf("unexpected updated net-20 row: %+v", r2)
+	}
+}
