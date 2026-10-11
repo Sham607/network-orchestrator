@@ -12,7 +12,7 @@ import (
 )
 
 // TestRouterRegistersOnlyReadRoutes inspects the router's actual route table:
-// five GET read routes plus two POST stubs for gated action endpoints (ZENI-19).
+// seven GET read routes plus two POST stubs for gated action endpoints (ZENI-19).
 // No other non-GET routes may be registered.
 func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 	router := NewRouter(Dependencies{})
@@ -35,6 +35,8 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 	}
 
 	want := []string{
+		"GET /api/v1/clients",
+		"GET /api/v1/clients/{id}",
 		"GET /api/v1/devices",
 		"GET /api/v1/health",
 		"GET /api/v1/ready",

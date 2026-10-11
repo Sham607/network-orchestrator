@@ -26,6 +26,10 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 				{ID: "dev-1", SiteID: "site-alpha", MAC: "aa:bb:cc:00:00:01", Name: "U6 Pro", Model: "U6 Pro", Type: "ap", Status: "ONLINE", Firmware: "6.6.55", IP: "10.0.0.11"},
 				{ID: "dev-2", SiteID: "site-alpha", MAC: "aa:bb:cc:00:00:02", Name: "USW-24", Model: "USW-24", Type: "switch", Status: "OFFLINE", IP: "10.0.0.12"},
 			},
+			Clients: []unifi.ClientInfo{
+				{ID: "client-1", SiteID: "site-alpha", MAC: "aa:bb:cc:dd:ee:01", Hostname: "ivan-laptop", IP: "10.20.5.44", APID: "dev-1", ConnectedAt: base},
+				{ID: "client-2", SiteID: "site-alpha", MAC: "aa:bb:cc:dd:ee:02", Hostname: "office-desktop", APID: "dev-2", ConnectedAt: base.Add(time.Minute)},
+			},
 		},
 		{
 			Site:      unifi.Site{ID: "site-beta", Name: "Beta Branch"},
@@ -35,6 +39,9 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 			Devices: []unifi.Device{
 				{ID: "dev-3", SiteID: "site-beta", MAC: "aa:bb:cc:00:00:03", Name: "UDM Pro", Model: "UDM Pro", Type: "gateway", Status: "ONLINE"},
 				{ID: "dev-4", SiteID: "site-beta", MAC: "aa:bb:cc:00:00:04", Name: "U6 Lite", Model: "U6 Lite", Type: "ap", Status: "ADOPTING"},
+			},
+			Clients: []unifi.ClientInfo{
+				{ID: "client-3", SiteID: "site-beta", MAC: "aa:bb:cc:dd:ee:03", Hostname: "beta-phone", APID: "dev-3", ConnectedAt: base.Add(2 * time.Minute)},
 			},
 		},
 		{
@@ -53,6 +60,21 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 			t.Fatalf("seed %s: %v", snap.Site.ID, err)
 		}
 	}
+
+	// client_type/access_type and the disconnected state are not yet carried by
+	// the write path (upsertClient has no column for them; a worker gap outside
+	// this ticket's scope), so the fixtures are set directly to exercise the
+	// read side's filters against the shape the contract documents.
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := repo.pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed fixup %q: %v", sql, err)
+		}
+	}
+	exec(`UPDATE clients SET client_type = 'WIRELESS', access_type = 'DEFAULT' WHERE unifi_client_id = 'client-1'`)
+	exec(`UPDATE clients SET client_type = 'WIRED' WHERE unifi_client_id = 'client-2'`)
+	exec(`UPDATE clients SET is_connected = false, disconnected_at = $1 WHERE unifi_client_id = 'client-3'`,
+		base.Add(10*time.Minute))
 }
 
 func siteUUID(t *testing.T, repo *PostgresRepository, unifiSiteID string) string {
@@ -64,6 +86,18 @@ func siteUUID(t *testing.T, repo *PostgresRepository, unifiSiteID string) string
 	}
 	return id
 }
+
+func clientUUID(t *testing.T, repo *PostgresRepository, unifiClientID string) string {
+	t.Helper()
+	var id string
+	if err := repo.pool.QueryRow(context.Background(),
+		`SELECT id::text FROM clients WHERE unifi_client_id = $1`, unifiClientID).Scan(&id); err != nil {
+		t.Fatalf("read uuid of %s: %v", unifiClientID, err)
+	}
+	return id
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 func names(page SitePage) []string {
 	out := make([]string, 0, len(page.Items))
@@ -249,6 +283,94 @@ func TestPostgresListDevicesLeavesUnknownFieldsNil(t *testing.T) {
 	}
 }
 
+func TestPostgresListClientsFiltersAndCombines(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+	ctx := context.Background()
+	alpha := siteUUID(t, repo, "site-alpha")
+
+	cases := []struct {
+		name  string
+		query ClientQuery
+		want  []string
+	}{
+		{"unfiltered", ClientQuery{}, []string{"beta-phone", "ivan-laptop", "office-desktop"}},
+		{"site", ClientQuery{SiteID: alpha}, []string{"ivan-laptop", "office-desktop"}},
+		{"connected true", ClientQuery{Connected: boolPtr(true)}, []string{"ivan-laptop", "office-desktop"}},
+		{"connected false", ClientQuery{Connected: boolPtr(false)}, []string{"beta-phone"}},
+		{"uplink_device_id", ClientQuery{UplinkDeviceID: "dev-1"}, []string{"ivan-laptop"}},
+		{"client_type", ClientQuery{ClientType: "WIRED"}, []string{"office-desktop"}},
+		{"mac", ClientQuery{MAC: "aa:bb:cc:dd:ee:03"}, []string{"beta-phone"}},
+		// ssid is published but inert in phase 1 (mock-expectations §5): the
+		// column is always null, so the filter can never match a row.
+		{"ssid is always inert", ClientQuery{SSID: "corp"}, nil},
+		{"combined filters narrow to nothing", ClientQuery{SiteID: alpha, ClientType: "WIRED", MAC: "aa:bb:cc:dd:ee:01"}, nil},
+	}
+
+	for _, tc := range cases {
+		query := tc.query
+		query.Page, query.PageSize, query.Sort, query.Order = 1, 10, "hostname", "asc"
+		page, err := repo.ListClients(ctx, query)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		got := make([]string, 0, len(page.Items))
+		for _, client := range page.Items {
+			got = append(got, deref(client.Hostname))
+		}
+		if !equal(got, tc.want) {
+			t.Errorf("%s = %v, want %v", tc.name, got, tc.want)
+		}
+		if page.Total != len(tc.want) {
+			t.Errorf("%s total = %d, want %d", tc.name, page.Total, len(tc.want))
+		}
+	}
+}
+
+// TestPostgresListClientsLeaveSSIDAndSignalNil pins the null contract: ssid and
+// signal_dbm are never fabricated, even for a row the write path otherwise
+// fills in completely (docs/data-model.md §4.5).
+func TestPostgresListClientsLeaveSSIDAndSignalNil(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+
+	page, err := repo.ListClients(context.Background(), ClientQuery{Page: 1, PageSize: 10, Sort: "hostname", Order: "asc"})
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+	for _, client := range page.Items {
+		if client.SSID != nil || client.SignalDBm != nil {
+			t.Fatalf("%s: ssid/signal_dbm = %v/%v, want null (phase 1)", deref(client.Hostname), client.SSID, client.SignalDBm)
+		}
+	}
+}
+
+func TestPostgresGetClientFindsAndReportsNotFound(t *testing.T) {
+	repo := NewPostgresRepository(testPool(t))
+	seedReadCache(t, repo)
+	ctx := context.Background()
+
+	id := clientUUID(t, repo, "client-1")
+	client, ok, err := repo.GetClient(ctx, id)
+	if err != nil {
+		t.Fatalf("get client: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetClient(%s) ok = false, want true", id)
+	}
+	if deref(client.Hostname) != "ivan-laptop" || !client.IsConnected {
+		t.Fatalf("client = %+v, want the connected ivan-laptop row", client)
+	}
+
+	_, ok, err = repo.GetClient(ctx, "00000000-0000-0000-0000-000000000000")
+	if err != nil {
+		t.Fatalf("get missing client: %v", err)
+	}
+	if ok {
+		t.Fatal("GetClient ok = true for an id that does not exist, want false")
+	}
+}
+
 // TestListRejectsASortTheContractDoesNotDeclare keeps user input out of the SQL
 // text: the whitelist is the only thing that can reach ORDER BY. A repository
 // is not reached without a pool, which proves the check happens first.
@@ -260,6 +382,9 @@ func TestListRejectsASortTheContractDoesNotDeclare(t *testing.T) {
 	}
 	if _, err := repo.ListDevices(context.Background(), DeviceQuery{Page: 1, PageSize: 10, Sort: "name", Order: "sideways"}); err == nil {
 		t.Error("ListDevices accepted an undeclared sort order")
+	}
+	if _, err := repo.ListClients(context.Background(), ClientQuery{Page: 1, PageSize: 10, Sort: "mac", Order: "asc"}); err == nil {
+		t.Error("ListClients accepted an undeclared sort field")
 	}
 }
 

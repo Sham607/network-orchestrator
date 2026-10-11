@@ -27,6 +27,8 @@ type DB interface {
 type Inventory interface {
 	ListSites(ctx context.Context, q inventory.SiteQuery) (inventory.SitePage, error)
 	ListDevices(ctx context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error)
+	ListClients(ctx context.Context, q inventory.ClientQuery) (inventory.ClientPage, error)
+	GetClient(ctx context.Context, id string) (inventory.Client, bool, error)
 }
 
 // Dependencies are the collaborators a router needs.
@@ -53,6 +55,8 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/sync/status", handleSyncStatus(deps))
 		r.Get("/sites", handleListSites(deps))
 		r.Get("/devices", handleListDevices(deps))
+		r.Get("/clients", handleListClients(deps))
+		r.Get("/clients/{id}", handleGetClient(deps))
 
 		r.Post("/devices/{id}/actions", handleWriteDisabled)
 		r.Post("/clients/{id}/actions", handleWriteDisabled)

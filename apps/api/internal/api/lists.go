@@ -176,6 +176,21 @@ func validateMAC(fields fieldErrors, name, value string) bool {
 	return true
 }
 
+// validateBool enforces `format: boolean`, returning the parsed value and
+// whether it was valid (mirroring validateUUID's two-step style so a caller
+// can assign the field only on success).
+func validateBool(fields fieldErrors, name, value string) (bool, bool) {
+	switch value {
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		fields[name] = "must be a boolean"
+		return false, false
+	}
+}
+
 // writeValidationFailed renders the contract's 400 body.
 func writeValidationFailed(w http.ResponseWriter, r *http.Request, fields fieldErrors) {
 	writeError(w, r, CodeValidationFailed, fields.message(), map[string]any{"fields": fields})

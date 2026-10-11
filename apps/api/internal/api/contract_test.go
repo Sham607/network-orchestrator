@@ -131,24 +131,39 @@ func TestDeviceListResponseMatchesTheContract(t *testing.T) {
 	assertMatchesContract(t, "DeviceList", rr.Body.String())
 }
 
+func TestClientListResponseMatchesTheContract(t *testing.T) {
+	rr := get(t, listRouter(t, &fakeInventory{clients: sampleClients()}), "/api/v1/clients")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	assertMatchesContract(t, "ClientList", rr.Body.String())
+}
+
+func TestGetClientResponseMatchesTheContract(t *testing.T) {
+	inv := &fakeInventory{getClient: sampleClients().Items[0], getClientFound: true}
+	rr := get(t, listRouter(t, inv), "/api/v1/clients/4c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e8f")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rr.Code, rr.Body.String())
+	}
+	assertMatchesContract(t, "Client", rr.Body.String())
+}
+
 func TestEmptyResponsesMatchTheContract(t *testing.T) {
 	inv := &fakeInventory{
 		sites:   inventory.SitePage{Items: []inventory.Site{}},
 		devices: inventory.DevicePage{Items: []inventory.Device{}},
+		clients: inventory.ClientPage{Items: []inventory.Client{}},
 	}
 	handler := listRouter(t, inv)
 
 	// The contract's `empty` example: an empty cache is a 200 with data [] and a
 	// zero total, not a 404 and not a null.
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200", endpoint, rr.Code)
 		}
-		schemaName := "SiteList"
-		if endpoint == "devices" {
-			schemaName = "DeviceList"
-		}
+		schemaName := map[string]string{"sites": "SiteList", "devices": "DeviceList", "clients": "ClientList"}[endpoint]
 		assertMatchesContract(t, schemaName, rr.Body.String())
 	}
 }
@@ -174,7 +189,7 @@ func TestServiceUnavailableMatchesTheContract(t *testing.T) {
 // transport writes is declared by the contract, so a raw UniFi payload, a UniFi
 // id or a console id cannot reach the dashboard by being added to the cache.
 func TestListBodiesExposeOnlyContractFields(t *testing.T) {
-	handler := listRouter(t, &fakeInventory{sites: sampleSites(), devices: sampleDevices()})
+	handler := listRouter(t, &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()})
 
 	cases := map[string]struct {
 		endpoint   string
@@ -183,6 +198,7 @@ func TestListBodiesExposeOnlyContractFields(t *testing.T) {
 	}{
 		"sites":   {"/api/v1/sites", "SiteList", "Site"},
 		"devices": {"/api/v1/devices", "DeviceList", "Device"},
+		"clients": {"/api/v1/clients", "ClientList", "Client"},
 	}
 
 	for name, tc := range cases {

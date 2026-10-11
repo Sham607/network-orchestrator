@@ -22,9 +22,17 @@ type fakeInventory struct {
 	siteErr   error
 	devices   inventory.DevicePage
 	deviceErr error
+	clients   inventory.ClientPage
+	clientErr error
 
-	siteQueries   []inventory.SiteQuery
-	deviceQueries []inventory.DeviceQuery
+	getClient      inventory.Client
+	getClientFound bool
+	getClientErr   error
+
+	siteQueries    []inventory.SiteQuery
+	deviceQueries  []inventory.DeviceQuery
+	clientQueries  []inventory.ClientQuery
+	getClientCalls []string
 }
 
 func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inventory.SitePage, error) {
@@ -35,6 +43,16 @@ func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inv
 func (f *fakeInventory) ListDevices(_ context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error) {
 	f.deviceQueries = append(f.deviceQueries, q)
 	return f.devices, f.deviceErr
+}
+
+func (f *fakeInventory) ListClients(_ context.Context, q inventory.ClientQuery) (inventory.ClientPage, error) {
+	f.clientQueries = append(f.clientQueries, q)
+	return f.clients, f.clientErr
+}
+
+func (f *fakeInventory) GetClient(_ context.Context, id string) (inventory.Client, bool, error) {
+	f.getClientCalls = append(f.getClientCalls, id)
+	return f.getClient, f.getClientFound, f.getClientErr
 }
 
 func (f *fakeInventory) siteQuery() inventory.SiteQuery {
@@ -51,8 +69,15 @@ func (f *fakeInventory) deviceQuery() inventory.DeviceQuery {
 	return f.deviceQueries[len(f.deviceQueries)-1]
 }
 
+func (f *fakeInventory) clientQuery() inventory.ClientQuery {
+	if len(f.clientQueries) == 0 {
+		return inventory.ClientQuery{}
+	}
+	return f.clientQueries[len(f.clientQueries)-1]
+}
+
 func (f *fakeInventory) called() bool {
-	return len(f.siteQueries)+len(f.deviceQueries) > 0
+	return len(f.siteQueries)+len(f.deviceQueries)+len(f.clientQueries)+len(f.getClientCalls) > 0
 }
 
 // listRouter serves the list endpoints with UniFi disabled: the cache is the
@@ -135,6 +160,32 @@ func sampleDevices() inventory.DevicePage {
 			{
 				ID: "3a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6e", SiteID: "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
 				DeviceType: "other", SyncedAt: synced,
+			},
+		},
+	}
+}
+
+func sampleClients() inventory.ClientPage {
+	synced := time.Date(2026, 3, 1, 8, 0, 0, 0, time.UTC)
+	connectedAt := synced.Add(-2 * time.Hour)
+	firstSeen := synced.Add(-72 * time.Hour)
+	return inventory.ClientPage{
+		Total: 2,
+		Items: []inventory.Client{
+			{
+				ID: "4c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e8f", SiteID: "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
+				MAC: ptr("aa:bb:cc:dd:ee:03"), Hostname: ptr("ivan-laptop"), IPAddress: ptr("10.20.5.44"),
+				ClientType: ptr("WIRELESS"), AccessType: ptr("DEFAULT"),
+				UplinkDeviceID: ptr("2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d"),
+				IsConnected:    true, ConnectedAt: &connectedAt,
+				FirstSeen: firstSeen, LastSeen: synced, SyncedAt: synced,
+			},
+			// A historical row the worker marked disconnected: the contract keeps
+			// it (docs/data-model.md §4.1), with ssid/signal_dbm null (phase 1).
+			{
+				ID: "5c5d6e7f-8a9b-4c0d-1e2f-3a4b5c6d7e90", SiteID: "1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c",
+				IsConnected: false, DisconnectedAt: &synced,
+				FirstSeen: firstSeen, LastSeen: synced, SyncedAt: synced,
 			},
 		},
 	}
@@ -243,8 +294,8 @@ func TestListSitesRejectsUnknownQueryParameters(t *testing.T) {
 // serving 200 rows for `page_size=1000` would answer a different question than
 // the caller asked.
 func TestPageSizeOverTheMaximumIsRejectedNotClamped(t *testing.T) {
-	for _, endpoint := range []string{"sites", "devices"} {
-		inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices()}
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
+		inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
 		rr := get(t, listRouter(t, inv), "/api/v1/"+endpoint+"?page_size=201")
 
 		if rr.Code != http.StatusBadRequest {
@@ -427,10 +478,11 @@ func TestEmptyCacheIsAnEmptyPageNotAnError(t *testing.T) {
 	inv := &fakeInventory{
 		sites:   inventory.SitePage{Items: []inventory.Site{}},
 		devices: inventory.DevicePage{Items: []inventory.Device{}},
+		clients: inventory.ClientPage{Items: []inventory.Client{}},
 	}
 	handler := listRouter(t, inv)
 
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200 (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -458,10 +510,10 @@ func TestStaleCacheIsServedWithPerRowSyncedAt(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: true, LastSuccessfulSyncAt: &synced,
 	}}
 
-	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices()}
+	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, stale, inv)
 
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200 from a stale cache (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -487,10 +539,10 @@ func TestFreshCacheIsServedWhileTheControllerIsOffline(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: false, LastSuccessfulSyncAt: ptr(time.Now().Add(-time.Minute)),
 	}}
 
-	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices()}
+	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, fresh, inv)
 
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d, want 200 from a fresh cache (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -513,10 +565,10 @@ func TestStaleCacheWithAnOfflineControllerIs503(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: false, LastSuccessfulSyncAt: &synced, LastErrorKind: "unifi_unreachable",
 	}}
 
-	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices()}
+	inv := &fakeInventory{sites: sampleSites(), devices: sampleDevices(), clients: sampleClients()}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, stale, inv)
 
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status = %d, want 503 (body: %s)", endpoint, rr.Code, rr.Body.String())
@@ -549,10 +601,14 @@ func TestControllerNeverAnsweredIs503(t *testing.T) {
 		Surface: inventory.SourceCloud, Reachable: false,
 	}}
 
-	inv := &fakeInventory{sites: inventory.SitePage{Items: []inventory.Site{}}, devices: inventory.DevicePage{Items: []inventory.Device{}}}
+	inv := &fakeInventory{
+		sites:   inventory.SitePage{Items: []inventory.Site{}},
+		devices: inventory.DevicePage{Items: []inventory.Device{}},
+		clients: inventory.ClientPage{Items: []inventory.Client{}},
+	}
 	handler := testRouterWithInventory(t, cfg, fakeDB{}, never, inv)
 
-	for _, endpoint := range []string{"sites", "devices"} {
+	for _, endpoint := range []string{"sites", "devices", "clients"} {
 		rr := get(t, handler, "/api/v1/"+endpoint)
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("%s: status = %d, want 503 (body: %s)", endpoint, rr.Code, rr.Body.String())

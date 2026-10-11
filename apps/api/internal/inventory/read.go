@@ -35,6 +35,20 @@ type DeviceQuery struct {
 	MAC        string
 }
 
+// ClientQuery is one page request of GET /clients.
+type ClientQuery struct {
+	Page           int
+	PageSize       int
+	Sort           string
+	Order          string
+	SiteID         string
+	Connected      *bool
+	UplinkDeviceID string
+	ClientType     string
+	MAC            string
+	SSID           string
+}
+
 // Site is a cached site as the transport exposes it. The raw UniFi payload,
 // the UniFi natural keys and the console are deliberately absent: the API
 // exposes the control plane's own id, not UniFi's (ADR-003 §2, §5).
@@ -69,6 +83,29 @@ type Device struct {
 	SyncedAt          time.Time
 }
 
+// Client is a cached client as the transport exposes it. ssid and signal_dbm
+// stay nil in phase 1: the Integration API does not expose them yet
+// (docs/data-model.md §4.5), and the transport renders that as null rather
+// than a fabricated value.
+type Client struct {
+	ID             string
+	SiteID         string
+	MAC            *string
+	Hostname       *string
+	IPAddress      *string
+	ClientType     *string
+	AccessType     *string
+	UplinkDeviceID *string
+	SSID           *string
+	SignalDBm      *int
+	IsConnected    bool
+	ConnectedAt    *time.Time
+	DisconnectedAt *time.Time
+	FirstSeen      time.Time
+	LastSeen       time.Time
+	SyncedAt       time.Time
+}
+
 // SitePage is one page of sites plus the unpaged total the contract reports.
 type SitePage struct {
 	Items []Site
@@ -78,6 +115,12 @@ type SitePage struct {
 // DevicePage is one page of devices plus the unpaged total.
 type DevicePage struct {
 	Items []Device
+	Total int
+}
+
+// ClientPage is one page of clients plus the unpaged total.
+type ClientPage struct {
+	Items []Client
 	Total int
 }
 
@@ -92,6 +135,17 @@ const (
 AND ($2::text IS NULL OR d.status = $2::text)
 AND ($3::text IS NULL OR d.device_type = $3::text)
 AND ($4::text IS NULL OR d.mac = $4::text)`
+
+	// The ssid leg is why `?ssid=` on /clients is inert rather than ignored: the
+	// column is always null in phase 1, so the filter is simply never satisfied
+	// (openapi/mock-expectations.md §5).
+	clientsFilter = `
+    ($1::uuid IS NULL OR c.site_id = $1::uuid)
+AND ($2::boolean IS NULL OR c.is_connected = $2::boolean)
+AND ($3::text IS NULL OR c.uplink_device_id = $3::text)
+AND ($4::text IS NULL OR c.client_type = $4::text)
+AND ($5::text IS NULL OR c.mac = $5::text)
+AND ($6::text IS NULL OR c.ssid = $6::text)`
 )
 
 const listSitesSQL = `
@@ -117,6 +171,24 @@ LIMIT $5 OFFSET $6`
 
 const countDevicesSQL = `SELECT count(*) FROM devices d WHERE ` + devicesFilter
 
+const listClientsSQL = `
+SELECT c.id::text, c.site_id::text, c.mac, c.hostname, host(c.ip_address), c.client_type,
+       c.access_type, c.uplink_device_id, c.ssid, c.signal_dbm, c.is_connected, c.connected_at,
+       c.disconnected_at, c.first_seen, c.last_seen, c.synced_at
+FROM clients c
+WHERE ` + clientsFilter + `
+ORDER BY %s
+LIMIT $7 OFFSET $8`
+
+const countClientsSQL = `SELECT count(*) FROM clients c WHERE ` + clientsFilter
+
+const getClientSQL = `
+SELECT c.id::text, c.site_id::text, c.mac, c.hostname, host(c.ip_address), c.client_type,
+       c.access_type, c.uplink_device_id, c.ssid, c.signal_dbm, c.is_connected, c.connected_at,
+       c.disconnected_at, c.first_seen, c.last_seen, c.synced_at
+FROM clients c
+WHERE c.id = $1::uuid`
+
 // sortColumns whitelist the sort fields each endpoint declares. The transport
 // validates the enum first; the map is what keeps user input out of the SQL
 // text, and an unknown field is an error rather than a silent fallback.
@@ -131,6 +203,12 @@ var (
 		"status":     "d.status",
 		"adopted_at": "d.adopted_at",
 		"synced_at":  "d.synced_at",
+	}
+	clientSortColumns = map[string]string{
+		"hostname":     "c.hostname",
+		"last_seen":    "c.last_seen",
+		"connected_at": "c.connected_at",
+		"synced_at":    "c.synced_at",
 	}
 )
 
@@ -216,6 +294,69 @@ func (r *PostgresRepository) ListDevices(ctx context.Context, q DeviceQuery) (De
 		return DevicePage{}, fmt.Errorf("inventory: read devices: %w", err)
 	}
 	return page, nil
+}
+
+// ListClients returns one page of the cached clients.
+func (r *PostgresRepository) ListClients(ctx context.Context, q ClientQuery) (ClientPage, error) {
+	order, err := orderBy(clientSortColumns, q.Sort, q.Order, "c.id")
+	if err != nil {
+		return ClientPage{}, fmt.Errorf("inventory: list clients: %w", err)
+	}
+
+	tx, err := r.beginRead(ctx)
+	if err != nil {
+		return ClientPage{}, fmt.Errorf("inventory: list clients: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	filters := []any{
+		optionalText(q.SiteID), q.Connected, optionalText(q.UplinkDeviceID),
+		optionalText(q.ClientType), optionalText(q.MAC), optionalText(q.SSID),
+	}
+	var total int64
+	if err := tx.QueryRow(ctx, countClientsSQL, filters...).Scan(&total); err != nil {
+		return ClientPage{}, fmt.Errorf("inventory: count clients: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, fmt.Sprintf(listClientsSQL, order),
+		append(filters, q.PageSize, offsetOf(q.Page, q.PageSize))...)
+	if err != nil {
+		return ClientPage{}, fmt.Errorf("inventory: query clients: %w", err)
+	}
+	defer rows.Close()
+
+	page := ClientPage{Items: []Client{}, Total: int(total)}
+	for rows.Next() {
+		var client Client
+		if err := rows.Scan(&client.ID, &client.SiteID, &client.MAC, &client.Hostname,
+			&client.IPAddress, &client.ClientType, &client.AccessType, &client.UplinkDeviceID,
+			&client.SSID, &client.SignalDBm, &client.IsConnected, &client.ConnectedAt,
+			&client.DisconnectedAt, &client.FirstSeen, &client.LastSeen, &client.SyncedAt); err != nil {
+			return ClientPage{}, fmt.Errorf("inventory: scan client: %w", err)
+		}
+		page.Items = append(page.Items, client)
+	}
+	if err := rows.Err(); err != nil {
+		return ClientPage{}, fmt.Errorf("inventory: read clients: %w", err)
+	}
+	return page, nil
+}
+
+// GetClient returns one cached client by its local id. ok is false when no row
+// matches, the not_found case the transport renders as 404 (ADR-003 §5).
+func (r *PostgresRepository) GetClient(ctx context.Context, id string) (Client, bool, error) {
+	var client Client
+	err := r.pool.QueryRow(ctx, getClientSQL, id).Scan(&client.ID, &client.SiteID, &client.MAC,
+		&client.Hostname, &client.IPAddress, &client.ClientType, &client.AccessType,
+		&client.UplinkDeviceID, &client.SSID, &client.SignalDBm, &client.IsConnected,
+		&client.ConnectedAt, &client.DisconnectedAt, &client.FirstSeen, &client.LastSeen, &client.SyncedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Client{}, false, nil
+		}
+		return Client{}, false, fmt.Errorf("inventory: get client %s: %w", id, err)
+	}
+	return client, true, nil
 }
 
 // beginRead opens the read-only, repeatable-read transaction a page is served
