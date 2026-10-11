@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +39,10 @@ type WorkerConfig struct {
 	Interval time.Duration
 	// StaleAfter is the age at which the cache stops satisfying /ready.
 	StaleAfter time.Duration
+
+	// SiteAllowlist optionally restricts sync to only sites whose ID or Name
+	// matches an entry. When empty, all sites are synced (ZENI-19).
+	SiteAllowlist []string
 }
 
 // Worker polls UniFi into the local cache and publishes its freshness.
@@ -161,10 +166,34 @@ func (w *Worker) runCycle(ctx context.Context, trigger string) SyncRun {
 		w.finish(ctx, &run)
 		return run
 	}
-	run.SitesTotal = len(sites)
+
+	uniqueSites := make([]unifi.Site, 0, len(sites))
+	seenSites := make(map[string]struct{})
+	for _, s := range sites {
+		if _, ok := seenSites[s.ID]; ok {
+			continue
+		}
+		seenSites[s.ID] = struct{}{}
+		uniqueSites = append(uniqueSites, s)
+	}
+
+	if len(w.cfg.SiteAllowlist) > 0 {
+		allowed := make(map[string]bool, len(w.cfg.SiteAllowlist))
+		for _, a := range w.cfg.SiteAllowlist {
+			allowed[strings.ToLower(strings.TrimSpace(a))] = true
+		}
+		filtered := make([]unifi.Site, 0, len(uniqueSites))
+		for _, s := range uniqueSites {
+			if allowed[strings.ToLower(s.ID)] || allowed[strings.ToLower(s.Name)] {
+				filtered = append(filtered, s)
+			}
+		}
+		uniqueSites = filtered
+	}
+	run.SitesTotal = len(uniqueSites)
 
 	var firstErr error
-	for _, site := range sites {
+	for _, site := range uniqueSites {
 		snap, err := w.collect(ctx, site, started)
 		if err == nil {
 			err = w.cfg.Repo.ApplySite(ctx, snap)

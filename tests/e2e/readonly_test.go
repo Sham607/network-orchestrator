@@ -3,6 +3,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -11,11 +12,8 @@ import (
 //
 // The contract (openapi/openapi.yaml, `x-status: proposed-gated`) promises that
 // while writes are gated the two action routes answer `403 forbidden` with
-// `details.reason: write_disabled`. In the shipped code neither route is
-// registered, so chi answers 404. That is a real contract/code divergence, not
-// a live write path: this test pins the behaviour that actually holds and fails
-// if any write route ever answers success. The route table itself is inspected
-// by TestRouterRegistersOnlyReadRoutes in apps/api/internal/api.
+// `details.reason: write_disabled`. Both routes are registered with stubs that
+// enforce this boundary (ZENI-19).
 func TestWriteActionRoutesRejectWrites(t *testing.T) {
 	s := startStack(t, stackOptions{unifiEnabled: false})
 
@@ -31,8 +29,18 @@ func TestWriteActionRoutesRejectWrites(t *testing.T) {
 		if code >= 200 && code < 400 {
 			t.Fatalf("POST %s accepted a write (status %d): the read-only boundary is broken\nbody: %s", path, code, body)
 		}
-		if code != http.StatusNotFound {
-			t.Errorf("POST %s status = %d, want 404 while no write handler is registered\nbody: %s", path, code, body)
+		if code != http.StatusForbidden {
+			t.Errorf("POST %s status = %d, want 403 write_disabled\nbody: %s", path, code, body)
+		}
+		var errResp errorBody
+		if err := json.Unmarshal(body, &errResp); err != nil {
+			t.Fatalf("decode: %v\nbody: %s", err, body)
+		}
+		if errResp.Code != "forbidden" {
+			t.Errorf("code = %q, want forbidden", errResp.Code)
+		}
+		if errResp.Details.Reason != "write_disabled" {
+			t.Errorf("details.reason = %v, want write_disabled", errResp.Details.Reason)
 		}
 	}
 }

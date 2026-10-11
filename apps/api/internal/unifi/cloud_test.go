@@ -196,3 +196,68 @@ func TestCloudDeviceRawIsValidJSON(t *testing.T) {
 		t.Fatalf("raw payload is not valid JSON: %s", devices[0].Raw)
 	}
 }
+
+func TestCloudDualConsoleSitePreservesAllDevices(t *testing.T) {
+	// Regression test for ZENI-20: one siteId served by two consoles (hosts).
+	// Neither host's devices may be dropped, and ListSites must return unique sites.
+	routes := map[string][]byte{
+		"/v1/hosts": []byte(`{"httpStatusCode":200,"data":[]}`),
+		"/v1/sites": []byte(`{
+			"httpStatusCode": 200,
+			"data": [
+				{"siteId": "shared-site", "hostId": "host-1", "isOwner": true, "meta": {"name": "hq", "desc": "HQ"}},
+				{"siteId": "shared-site", "hostId": "host-2", "isOwner": false, "meta": {"name": "hq", "desc": "HQ"}}
+			]
+		}`),
+		"/v1/devices": []byte(`{
+			"httpStatusCode": 200,
+			"data": [
+				{
+					"hostId": "host-1",
+					"devices": [
+						{"id": "dev-1", "mac": "aa:bb:cc:00:00:01", "name": "AP 1", "model": "U6 Pro", "status": "online"},
+						{"id": "dev-2", "mac": "aa:bb:cc:00:00:02", "name": "UDM Pro", "model": "UDM Pro", "status": "online", "isConsole": true}
+					]
+				},
+				{
+					"hostId": "host-2",
+					"devices": [
+						{"id": "dev-3", "mac": "aa:bb:cc:00:00:03", "name": "AP 2", "model": "U6 Pro", "status": "online"},
+						{"id": "dev-4", "mac": "aa:bb:cc:00:00:04", "name": "Switch", "model": "USW-24", "status": "online"}
+					]
+				}
+			]
+		}`),
+	}
+	srv, _ := fixtureServer(t, routes)
+	c := newTestCloud(t, srv)
+	ctx := context.Background()
+
+	sites, err := c.ListSites(ctx)
+	if err != nil {
+		t.Fatalf("ListSites: %v", err)
+	}
+	if len(sites) != 1 {
+		t.Fatalf("ListSites returned %d sites, want 1 unique site", len(sites))
+	}
+	if sites[0].ConsoleID != "host-1" {
+		t.Fatalf("expected owner host-1 ConsoleID, got %q", sites[0].ConsoleID)
+	}
+
+	devices, err := c.ListDevices(ctx, "shared-site")
+	if err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if len(devices) != 4 {
+		t.Fatalf("ListDevices returned %d devices, want 4 devices from both hosts", len(devices))
+	}
+	found := make(map[string]bool)
+	for _, d := range devices {
+		found[d.ID] = true
+	}
+	for _, wantID := range []string{"dev-1", "dev-2", "dev-3", "dev-4"} {
+		if !found[wantID] {
+			t.Errorf("missing device %q in collected devices", wantID)
+		}
+	}
+}

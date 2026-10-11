@@ -335,7 +335,9 @@ paths:
       operationId: listSites
       tags: [sites]
       summary: List sites
-      description: All UniFi sites known to the control plane, served from the local cache.
+      description: |
+        All UniFi sites known to the control plane, served from the local cache.
+        Undeclared query parameters are rejected with 400 validation_failed.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -444,7 +446,10 @@ paths:
       operationId: listDevices
       tags: [devices]
       summary: List devices
-      description: APs, switches and gateways, served from the cache. Filter server-side; do not fetch everything and filter in the browser.
+      description: |
+        APs, switches and gateways, served from the cache. Filter server-side; do
+        not fetch everything and filter in the browser. Undeclared query parameters
+        are rejected with 400 validation_failed.
       parameters:
         - $ref: "#/components/parameters/Page"
         - $ref: "#/components/parameters/PageSize"
@@ -479,6 +484,7 @@ paths:
         - name: sort
           in: query
           required: false
+          description: Field to sort by.
           schema:
             type: string
             enum: [name, model, status, adopted_at, synced_at]
@@ -655,6 +661,7 @@ paths:
         - name: sort
           in: query
           required: false
+          description: Field to sort by.
           schema:
             type: string
             enum: [hostname, last_seen, connected_at, synced_at]
@@ -797,6 +804,7 @@ paths:
         - name: sort
           in: query
           required: false
+          description: Field to sort by.
           schema:
             type: string
             enum: [name, vlan_id, synced_at]

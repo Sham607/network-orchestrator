@@ -533,3 +533,56 @@ func TestInternalErrorsAreNotEchoed(t *testing.T) {
 		t.Fatalf("error_message echoed a connection string: %q", run.ErrorMessage)
 	}
 }
+
+func TestRunCycleDualConsoleSiteDeduplication(t *testing.T) {
+	// Regression test for ZENI-20: if ListSites returns multiple entries for the same siteID,
+	// sites_total and sites_ok must reflect the number of unique sites, and the site must
+	// not be double-processed.
+	h := newHarness(t, func(c *fakeClient) {
+		c.sites = []unifi.Site{
+			{ID: "shared-site", Name: "Shared HQ", ConsoleID: "host-1"},
+			{ID: "shared-site", Name: "Shared HQ", ConsoleID: "host-2"},
+		}
+		c.devices["shared-site"] = []unifi.Device{
+			{ID: "dev-1", SiteID: "shared-site", MAC: "aa:bb:cc:00:00:01", Name: "AP 1", Type: "ap", Status: "ONLINE"},
+			{ID: "dev-2", SiteID: "shared-site", MAC: "aa:bb:cc:00:00:02", Name: "UDM", Type: "gateway", Status: "ONLINE"},
+			{ID: "dev-3", SiteID: "shared-site", MAC: "aa:bb:cc:00:00:03", Name: "AP 2", Type: "ap", Status: "ONLINE"},
+			{ID: "dev-4", SiteID: "shared-site", MAC: "aa:bb:cc:00:00:04", Name: "Switch", Type: "switch", Status: "ONLINE"},
+		}
+		c.clientErr["shared-site"] = notFound()
+		c.networkErr["shared-site"] = notFound()
+	})
+
+	run := h.worker.runCycle(context.Background(), TriggerStartup)
+
+	if run.Status != RunSuccess {
+		t.Fatalf("status = %q, want %q (error: %s)", run.Status, RunSuccess, run.ErrorMessage)
+	}
+	if run.SitesTotal != 1 || run.SitesOK != 1 || run.SitesFailed != 0 {
+		t.Fatalf("sites total/ok/failed = %d/%d/%d, want 1/1/0", run.SitesTotal, run.SitesOK, run.SitesFailed)
+	}
+	if run.Devices != 4 {
+		t.Fatalf("devices = %d, want 4", run.Devices)
+	}
+	if len(h.repo.applied) != 1 {
+		t.Fatalf("applied sites = %d, want 1", len(h.repo.applied))
+	}
+}
+
+func TestRunCycleSiteAllowlistFiltering(t *testing.T) {
+	// ZENI-19: Worker must be able to scope sync to an allowlist of sites.
+	h := newHarness(t, cloudFleet)
+	h.worker.cfg.SiteAllowlist = []string{"site-2"} // only Warehouse
+
+	run := h.worker.runCycle(context.Background(), TriggerStartup)
+
+	if run.Status != RunSuccess {
+		t.Fatalf("status = %q, want %q (error: %s)", run.Status, RunSuccess, run.ErrorMessage)
+	}
+	if run.SitesTotal != 1 || run.SitesOK != 1 || run.SitesFailed != 0 {
+		t.Fatalf("sites total/ok/failed = %d/%d/%d, want 1/1/0", run.SitesTotal, run.SitesOK, run.SitesFailed)
+	}
+	if len(h.repo.applied) != 1 || h.repo.applied[0].Site.ID != "site-2" {
+		t.Fatalf("expected only site-2 applied, got %+v", h.repo.applied)
+	}
+}

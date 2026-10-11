@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,6 +125,20 @@ func validateEnum(fields fieldErrors, name, value string, allowed ...string) boo
 	}
 	fields[name] = "must be one of " + strings.Join(allowed, ", ")
 	return false
+}
+
+// validateAllowedParams validates that every query parameter in values is in allowed.
+// Any undeclared parameter is flagged with a 400 validation_failed (ZENI-19).
+func validateAllowedParams(fields fieldErrors, values url.Values, allowed ...string) {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, a := range allowed {
+		allowedSet[a] = struct{}{}
+	}
+	for name := range values {
+		if _, ok := allowedSet[name]; !ok {
+			fields[name] = "is not a recognized query parameter"
+		}
+	}
 }
 
 // validateMaxLength enforces a maxLength constraint of the contract.

@@ -136,15 +136,9 @@ The browser really did render the unfiltered list. Reverting restores green:
 
 ## Known divergences (escalated, not silently fixed here)
 
-1. **Gated write routes answer 404, the contract says 403.** `openapi.yaml`
-   marks `/devices/{id}/actions` and `/clients/{id}/actions` `proposed-gated`
-   and promises `403 forbidden` with `details.reason: write_disabled`; the
-   router registers neither, so `chi` returns 404. Not a live write path — the
-   harness pins the real behaviour and reports the mismatch rather than
-   weakening the contract or the assertion.
-2. **An unrecognised query parameter is ignored.** `?state=OFFLINE` is dropped
-   silently (the real parameter is `status`), so a caller can believe a filter
-   applied when it did not.
+None remaining:
+1. Gated write routes (`/devices/{id}/actions` and `/clients/{id}/actions`) are registered with stubs returning `403 forbidden` and `details.reason: write_disabled` (resolved in ZENI-19).
+2. Unrecognised query parameters on `/sites` and `/devices` are rejected with `400 validation_failed` naming the offending field (resolved in ZENI-19).
 
 ## Out of scope
 

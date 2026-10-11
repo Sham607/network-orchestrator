@@ -218,6 +218,25 @@ func TestListSitesRejectsAnOverlongQuery(t *testing.T) {
 	}
 }
 
+func TestListSitesRejectsUnknownQueryParameters(t *testing.T) {
+	inv := &fakeInventory{sites: sampleSites()}
+	rr := get(t, listRouter(t, inv), "/api/v1/sites?unknown_field=true")
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusBadRequest)
+	}
+	body := decodeError(t, rr)
+	if body.Code != CodeValidationFailed {
+		t.Fatalf("code = %q, want %q", body.Code, CodeValidationFailed)
+	}
+	if problem := fieldProblem(t, body, "unknown_field"); problem != "is not a recognized query parameter" {
+		t.Fatalf("details.fields.unknown_field = %q, want 'is not a recognized query parameter'", problem)
+	}
+	if inv.called() {
+		t.Fatal("an invalid request reached the cache")
+	}
+}
+
 // --- pagination validation -------------------------------------------------
 
 // TestPageSizeOverTheMaximumIsRejectedNotClamped pins the decision: silently
@@ -342,8 +361,8 @@ func TestListDevicesForwardsEveryFilter(t *testing.T) {
 }
 
 // TestDevicesFilterIsStatusNotState guards the trap this issue calls out: the
-// contract declares `status`, and an undeclared `state` must not silently
-// change the answer.
+// contract declares `status`, and an undeclared `state` must not be silently
+// ignored — it is rejected with 400 validation_failed naming `state` (ZENI-19).
 func TestDevicesFilterIsStatusNotState(t *testing.T) {
 	status := &fakeInventory{devices: sampleDevices()}
 	if rr := get(t, listRouter(t, status), "/api/v1/devices?status=ONLINE"); rr.Code != http.StatusOK {
@@ -354,11 +373,19 @@ func TestDevicesFilterIsStatusNotState(t *testing.T) {
 	}
 
 	state := &fakeInventory{devices: sampleDevices()}
-	if rr := get(t, listRouter(t, state), "/api/v1/devices?state=ONLINE"); rr.Code != http.StatusOK {
-		t.Fatalf("state=ONLINE: status = %d, want 200", rr.Code)
+	rr := get(t, listRouter(t, state), "/api/v1/devices?state=ONLINE")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("state=ONLINE: status = %d, want 400 validation_failed", rr.Code)
 	}
-	if got := state.deviceQuery(); got.Status != "" {
-		t.Fatalf("query = %+v, want no status filter: `state` is not a contract parameter", got)
+	body := decodeError(t, rr)
+	if body.Code != CodeValidationFailed {
+		t.Errorf("code = %q, want validation_failed", body.Code)
+	}
+	if problem := fieldProblem(t, body, "state"); problem != "is not a recognized query parameter" {
+		t.Errorf("details.fields.state = %q, want 'is not a recognized query parameter'", problem)
+	}
+	if state.called() {
+		t.Error("an invalid request reached the cache")
 	}
 }
 
@@ -373,6 +400,8 @@ func TestListDevicesRejectsInvalidFilters(t *testing.T) {
 		{"device_type=router", "device_type", "must be one of ap, switch, gateway, other"},
 		{"status=" + repeat("A", 33), "status", "must be at most 32 characters"},
 		{"sort=uptime_sec", "sort", "must be one of name, model, status, adopted_at, synced_at"},
+		{"state=OFFLINE", "state", "is not a recognized query parameter"},
+		{"bogus_param=123", "bogus_param", "is not a recognized query parameter"},
 	}
 
 	for _, tc := range cases {

@@ -23,9 +23,10 @@ type cloudEnvelope[T any] struct {
 }
 
 type cloudSiteEntry struct {
-	SiteID string `json:"siteId"`
-	HostID string `json:"hostId"`
-	Meta   struct {
+	SiteID  string `json:"siteId"`
+	HostID  string `json:"hostId"`
+	IsOwner bool   `json:"isOwner"`
+	Meta    struct {
 		Name string `json:"name"`
 		Desc string `json:"desc"`
 	} `json:"meta"`
@@ -67,6 +68,8 @@ func (c *cloudClient) Health(ctx context.Context) error {
 }
 
 // ListSites returns every site in the fleet.
+// When a site is served by multiple hosts, unique sites are returned,
+// preferring an entry marked as owner.
 func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 	var env cloudEnvelope[cloudSiteEntry]
 	if err := c.t.getJSON(ctx, c.baseURL+"/v1/sites", &env); err != nil {
@@ -76,21 +79,29 @@ func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 		return nil, drift("site manager sites response has no data array")
 	}
 	out := make([]Site, 0, len(*env.Data))
+	seen := make(map[string]int)
 	for _, s := range *env.Data {
 		if strings.TrimSpace(s.SiteID) == "" {
 			return nil, drift("site manager site entry is missing siteId")
 		}
+		if idx, ok := seen[s.SiteID]; ok {
+			if s.IsOwner {
+				out[idx] = Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc, ConsoleID: s.HostID, Raw: mustRaw(s)}
+			}
+			continue
+		}
+		seen[s.SiteID] = len(out)
 		out = append(out, Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc, ConsoleID: s.HostID, Raw: mustRaw(s)})
 	}
 	return out, nil
 }
 
-// ListDevices returns the devices of the host that owns siteID.
+// ListDevices returns the devices of the hosts that serve siteID.
 //
 // The cloud devices endpoint is grouped by host, not by site: a site id is
-// resolved to its host first, then that host's device group is returned. On a
-// host that serves several sites the groups are shared, which is a limitation
-// of the cloud surface, not of this adapter.
+// resolved to its hosts first, then those hosts' device groups are returned.
+// When a site is served by multiple consoles, all associated hosts are collected
+// so that no devices are lost.
 func (c *cloudClient) ListDevices(ctx context.Context, siteID string) ([]Device, error) {
 	if strings.TrimSpace(siteID) == "" {
 		return nil, drift("siteID is required")
@@ -103,14 +114,13 @@ func (c *cloudClient) ListDevices(ctx context.Context, siteID string) ([]Device,
 	if sites.Data == nil {
 		return nil, drift("site manager sites response has no data array")
 	}
-	hostID := ""
+	hostIDs := make(map[string]struct{})
 	for _, s := range *sites.Data {
-		if s.SiteID == siteID {
-			hostID = s.HostID
-			break
+		if s.SiteID == siteID && s.HostID != "" {
+			hostIDs[s.HostID] = struct{}{}
 		}
 	}
-	if hostID == "" {
+	if len(hostIDs) == 0 {
 		return nil, &Error{Kind: ErrNotFound, Message: fmt.Sprintf("site %q not found in the Site Manager fleet", siteID)}
 	}
 
@@ -122,14 +132,19 @@ func (c *cloudClient) ListDevices(ctx context.Context, siteID string) ([]Device,
 		return nil, drift("site manager devices response has no data array")
 	}
 	var out []Device
+	seenDevices := make(map[string]struct{})
 	for _, g := range *groups.Data {
-		if g.HostID != hostID {
+		if _, ok := hostIDs[g.HostID]; !ok {
 			continue
 		}
 		for _, d := range g.Devices {
 			if strings.TrimSpace(d.ID) == "" {
 				return nil, drift("site manager device entry is missing id")
 			}
+			if _, exists := seenDevices[d.ID]; exists {
+				continue
+			}
+			seenDevices[d.ID] = struct{}{}
 			out = append(out, cloudDevice(siteID, d))
 		}
 	}

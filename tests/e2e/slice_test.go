@@ -168,9 +168,8 @@ func TestVerticalSlice(t *testing.T) {
 }
 
 // TestStatusFilterUsesStatusNotState proves the contract's parameter name. It
-// also documents a gap: the API ignores unrecognised query parameters, so
-// `state=OFFLINE` is silently dropped instead of rejected. That behaviour is
-// escalated on ZENI-16 (see the issue comment) rather than asserted as correct.
+// asserts that `state=OFFLINE` is rejected with 400 validation_failed naming
+// the undeclared parameter (ZENI-19).
 func TestStatusFilterUsesStatusNotState(t *testing.T) {
 	s := startStack(t, stackOptions{unifiEnabled: true})
 	s.waitForSynced(e2eDeviceTotal)
@@ -194,12 +193,21 @@ func TestStatusFilterUsesStatusNotState(t *testing.T) {
 		t.Errorf("status=offline total = %d, want %d (case-normalized)", lower.Pagination.Total, e2eOfflineCount)
 	}
 
-	// `state` is not the contract's parameter. If it were silently treated as
-	// an alias, this would filter to one row; the API must not do that.
-	var byState deviceList
-	s.getJSON("/api/v1/devices?state=OFFLINE", &byState)
-	if byState.Pagination.Total == e2eOfflineCount {
-		t.Errorf("state=OFFLINE filtered like status=OFFLINE: the API accepts an undocumented alias")
+	// `state` is not the contract's parameter. Undeclared query parameters must be
+	// rejected with 400 validation_failed.
+	code, body := s.get("/api/v1/devices?state=OFFLINE")
+	if code != http.StatusBadRequest {
+		t.Fatalf("state=OFFLINE status = %d, want 400\nbody: %s", code, body)
+	}
+	var errResp errorBody
+	if err := json.Unmarshal(body, &errResp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if errResp.Code != "validation_failed" {
+		t.Errorf("code = %q, want validation_failed", errResp.Code)
+	}
+	if errResp.Details.Fields == nil || errResp.Details.Fields["state"] == "" {
+		t.Errorf("expected 'state' in details.fields: %+v", errResp.Details.Fields)
 	}
 }
 
@@ -250,9 +258,11 @@ func TestValidationErrors(t *testing.T) {
 		{"device type unknown", "/api/v1/devices?device_type=bogus", "device_type"},
 		{"device site_id not a uuid", "/api/v1/devices?site_id=not-a-uuid", "site_id"},
 		{"device mac malformed", "/api/v1/devices?mac=zz:zz", "mac"},
+		{"device unknown query param", "/api/v1/devices?bogus_param=1", "bogus_param"},
 		{"site page_size above max", "/api/v1/sites?page_size=201", "page_size"},
 		{"site sort unknown", "/api/v1/sites?sort=bogus", "sort"},
 		{"site q too long", "/api/v1/sites?q=" + strings.Repeat("a", 129), "q"},
+		{"site unknown query param", "/api/v1/sites?bogus_param=1", "bogus_param"},
 	}
 
 	for _, tc := range cases {

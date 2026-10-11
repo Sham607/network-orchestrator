@@ -55,8 +55,9 @@ type deviceListBody struct {
 func handleListDevices(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fields := fieldErrors{}
-		params := parseListParams(r, fields)
 		values := r.URL.Query()
+		validateAllowedParams(fields, values, "page", "page_size", "order", "sort", "site_id", "status", "device_type", "mac")
+		params := parseListParams(r, fields)
 
 		query := inventory.DeviceQuery{
 			Page:     params.Page,

@@ -57,6 +57,10 @@ type Config struct {
 	SyncInterval   time.Duration
 	SyncStaleAfter time.Duration
 
+	// SyncSiteAllowlist optionally limits the sync worker to a subset of sites
+	// (by unifi_site_id or site name). Comma-separated. When empty, all sites are synced.
+	SyncSiteAllowlist []string
+
 	// AdminBootstrapPassword, when set, is used once to seed the first admin
 	// on an empty database. It is a secret and must never be committed.
 	AdminBootstrapPassword string
@@ -65,17 +69,18 @@ type Config struct {
 // Redacted returns a copy safe to log: every secret field is replaced.
 func (c Config) Redacted() map[string]any {
 	return map[string]any{
-		"app_env":        c.AppEnv,
-		"http_addr":      c.HTTPAddr,
-		"log_level":      c.LogLevel.String(),
-		"unifi_enabled":  c.UnifiEnabled,
-		"unifi_mode":     string(c.UnifiMode),
-		"sync_interval":  c.SyncInterval.String(),
-		"stale_after":    c.SyncStaleAfter.String(),
-		"database_url":   redactURL(c.DatabaseURL),
-		"sm_api_key":     redactSecret(c.UnifiSMAPIKey),
-		"local_api_key":  redactSecret(c.UnifiLocalAPIKey),
-		"admin_password": redactSecret(c.AdminBootstrapPassword),
+		"app_env":             c.AppEnv,
+		"http_addr":           c.HTTPAddr,
+		"log_level":           c.LogLevel.String(),
+		"unifi_enabled":       c.UnifiEnabled,
+		"unifi_mode":          string(c.UnifiMode),
+		"sync_interval":       c.SyncInterval.String(),
+		"stale_after":         c.SyncStaleAfter.String(),
+		"sync_site_allowlist": c.SyncSiteAllowlist,
+		"database_url":        redactURL(c.DatabaseURL),
+		"sm_api_key":          redactSecret(c.UnifiSMAPIKey),
+		"local_api_key":       redactSecret(c.UnifiLocalAPIKey),
+		"admin_password":      redactSecret(c.AdminBootstrapPassword),
 	}
 }
 
@@ -93,6 +98,14 @@ func Load() (Config, error) {
 		UnifiConsoleID:         os.Getenv("UNIFI_CONSOLE_ID"),
 		UnifiCAFile:            os.Getenv("UNIFI_CA_FILE"),
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
+	}
+
+	if rawAllowlist := os.Getenv("SYNC_SITE_ALLOWLIST"); strings.TrimSpace(rawAllowlist) != "" {
+		for _, part := range strings.Split(rawAllowlist, ",") {
+			if s := strings.TrimSpace(part); s != "" {
+				cfg.SyncSiteAllowlist = append(cfg.SyncSiteAllowlist, s)
+			}
+		}
 	}
 
 	var errs []error

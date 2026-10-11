@@ -264,3 +264,84 @@ func TestErrorCodeTableMatchesTheGoMapping(t *testing.T) {
 		t.Errorf("the table has %d rows but the Error enum declares %d codes", len(table), len(enum))
 	}
 }
+
+// TestSortParametersMatchContractRule ensures the 4 inline sort query parameters
+// across /sites, /devices, /clients, and /networks maintain an identical structure,
+// differing only in their domain-specific enum and default values.
+func TestSortParametersMatchContractRule(t *testing.T) {
+	doc := contractDoc(t)
+	paths := []string{"/sites", "/devices", "/clients", "/networks"}
+
+	for _, p := range paths {
+		pathObj := contractObject(t, doc, "paths", p, "get")
+		params, ok := pathObj["parameters"].([]any)
+		if !ok {
+			t.Fatalf("%s get has no parameters slice", p)
+		}
+
+		var sortParam map[string]any
+		for _, param := range params {
+			pm, ok := param.(map[string]any)
+			if !ok {
+				continue
+			}
+			if pm["name"] == "sort" {
+				sortParam = pm
+				break
+			}
+		}
+
+		if sortParam == nil {
+			t.Fatalf("%s is missing the sort query parameter", p)
+		}
+
+		if got, want := sortParam["in"], "query"; got != want {
+			t.Errorf("%s sort param: in = %v, want %v", p, got, want)
+		}
+		if got, want := sortParam["required"], false; got != want {
+			t.Errorf("%s sort param: required = %v, want %v", p, got, want)
+		}
+		if got, want := sortParam["description"], "Field to sort by."; got != want {
+			t.Errorf("%s sort param: description = %v, want %v", p, got, want)
+		}
+
+		schema, ok := sortParam["schema"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s sort param has missing or invalid schema", p)
+		}
+		if got, want := schema["type"], "string"; got != want {
+			t.Errorf("%s sort param schema: type = %v, want %v", p, got, want)
+		}
+
+		enum, ok := schema["enum"].([]any)
+		if !ok || len(enum) == 0 {
+			t.Errorf("%s sort param schema: enum must be non-empty slice", p)
+		}
+
+		def, ok := schema["default"].(string)
+		if !ok || def == "" {
+			t.Errorf("%s sort param schema: default must be non-empty string", p)
+		}
+
+		found := false
+		for _, e := range enum {
+			if e == def {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("%s sort param schema: default %q not found in enum %v", p, def, enum)
+		}
+
+		expectedParamKeys := []string{"description", "in", "name", "required", "schema"}
+		if got := objectKeys(t, sortParam); !equalStrings(got, expectedParamKeys) {
+			t.Errorf("%s sort param has unexpected keys: %v, want %v", p, got, expectedParamKeys)
+		}
+
+		expectedSchemaKeys := []string{"default", "enum", "type"}
+		if got := objectKeys(t, schema); !equalStrings(got, expectedSchemaKeys) {
+			t.Errorf("%s sort param schema has unexpected keys: %v, want %v", p, got, expectedSchemaKeys)
+		}
+	}
+}

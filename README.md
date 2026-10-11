@@ -41,9 +41,7 @@ make up                   # docker compose: API (:8080) + Postgres (:5432)
 
 # Apply the schema. "make up" does NOT run migrations — without this step the
 # database stays empty and goose_db_version never appears.
-export DATABASE_URL='postgres://orchestrator:orchestrator@localhost:5432/orchestrator?sslmode=disable'
-go run github.com/pressly/goose/v3/cmd/goose@latest \
-  -dir ./migrations postgres "$DATABASE_URL" up
+make migrate              # runs goose migrations against local Postgres
 
 # Expect: {"status":"ok",...} with HTTP 200
 curl -s localhost:8080/api/v1/health
@@ -59,20 +57,25 @@ database and start over, use `docker compose down -v`.
 ### Running each part directly
 
 ```bash
-make test      # Go unit tests
-make test-web  # Web component tests (Vitest)
-make build     # API binary + web bundle
-make e2e       # integration harness: real Postgres + a mocked UniFi, no secrets
-make e2e-web   # the same stack, driven through the dashboard by Playwright
-make smoke     # build + start the API + assert liveness/readiness behaviour
-make web       # Vite dev server on :5173, proxies /api to :8080
-make check     # lint, typecheck, both test suites, import boundaries, secret
-               # scan, OpenAPI lint, generated-type drift
+make test           # Go unit tests
+make test-web       # Web component tests (Vitest)
+make build          # API binary + web bundle
+make e2e            # integration harness: real Postgres + a mocked UniFi, no secrets
+make e2e-web        # the same stack, driven through the dashboard by Playwright
+make smoke          # build + start the API + assert liveness/readiness behaviour
+make web            # Vite dev server on :5173, proxies /api to :8080
+make migrate        # apply pending database migrations
+make migrate-status # show database migration status
+make check          # fast inner-loop checks (lint, typecheck, both test suites,
+                    # import boundaries, secret scan, OpenAPI lint, generated-type drift)
+make verify         # full local CI parity (all checks that run without a database:
+                    # check + build + smoke)
 ```
 
-`make check` does **not** cover everything CI runs — CI additionally runs
-`make build`, `make smoke`, `make e2e` and `make e2e-web`. A green `make check`
-is not a green CI. Run all of them before pushing.
+`make check` is a fast inner-loop check for active development. `make verify` provides
+full parity with CI jobs that run without an external database (`lint`, `typecheck`,
+`test`, `test-web`, `build`, `imports`, `secrets`, `openapi`, `openapi-types`, `smoke`).
+CI additionally runs `make e2e` and `make e2e-web` which require a disposable Postgres service.
 
 `make help` lists all targets.
 

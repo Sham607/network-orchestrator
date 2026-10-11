@@ -158,6 +158,7 @@ export interface paths {
         /**
          * List sites
          * @description All UniFi sites known to the control plane, served from the local cache.
+         *     Undeclared query parameters are rejected with 400 validation_failed.
          */
         get: operations["listSites"];
         put?: never;
@@ -194,7 +195,9 @@ export interface paths {
         };
         /**
          * List devices
-         * @description APs, switches and gateways, served from the cache. Filter server-side; do not fetch everything and filter in the browser.
+         * @description APs, switches and gateways, served from the cache. Filter server-side; do
+         *     not fetch everything and filter in the browser. Undeclared query parameters
+         *     are rejected with 400 validation_failed.
          */
         get: operations["listDevices"];
         put?: never;
@@ -964,6 +967,7 @@ export interface operations {
                 device_type?: "ap" | "switch" | "gateway" | "other";
                 /** @description Exact MAC match, normalized lower-case colon-separated. */
                 mac?: string;
+                /** @description Field to sort by. */
                 sort?: "name" | "model" | "status" | "adopted_at" | "synced_at";
             };
             header?: never;
@@ -1043,6 +1047,7 @@ export interface operations {
                  *     contract change later.
                  */
                 ssid?: string;
+                /** @description Field to sort by. */
                 sort?: "hostname" | "last_seen" | "connected_at" | "synced_at";
             };
             header?: never;
@@ -1111,6 +1116,7 @@ export interface operations {
                 /** @description UniFi `management` value, e.g. `GATEWAY`, `SWITCH`, `UNMANAGED`. */
                 management?: string;
                 enabled?: boolean;
+                /** @description Field to sort by. */
                 sort?: "name" | "vlan_id" | "synced_at";
             };
             header?: never;

@@ -135,13 +135,14 @@ func run() error {
 			return err
 		}
 		worker := inventory.NewWorker(inventory.WorkerConfig{
-			Client:     client,
-			Repo:       repo,
-			Audit:      audit.NewPostgresRecorder(pool),
-			Logger:     logger,
-			Surface:    surfaceName(cfg),
-			Interval:   cfg.SyncInterval,
-			StaleAfter: cfg.SyncStaleAfter,
+			Client:        client,
+			Repo:          repo,
+			Audit:         audit.NewPostgresRecorder(pool),
+			Logger:        logger,
+			Surface:       surfaceName(cfg),
+			Interval:      cfg.SyncInterval,
+			StaleAfter:    cfg.SyncStaleAfter,
+			SiteAllowlist: cfg.SyncSiteAllowlist,
 		})
 		syncStatus = worker
 		workerDone = make(chan struct{})

@@ -100,3 +100,20 @@ func TestRedactedNeverLeaksSecrets(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadSyncSiteAllowlist(t *testing.T) {
+	setEnv(t, map[string]string{
+		"DATABASE_URL":        "postgres://u:p@localhost:5432/db",
+		"SYNC_SITE_ALLOWLIST": "site-1, site-2 ,site-3",
+	})
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if len(cfg.SyncSiteAllowlist) != 3 {
+		t.Fatalf("expected 3 allowlisted sites, got %d", len(cfg.SyncSiteAllowlist))
+	}
+	if cfg.SyncSiteAllowlist[0] != "site-1" || cfg.SyncSiteAllowlist[1] != "site-2" || cfg.SyncSiteAllowlist[2] != "site-3" {
+		t.Errorf("SyncSiteAllowlist = %v", cfg.SyncSiteAllowlist)
+	}
+}

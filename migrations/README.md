@@ -13,7 +13,13 @@ rationale, ERD and source-of-truth mapping live in [`docs/data-model.md`](../doc
 Apply locally against the dev database:
 
 ```sh
-go run github.com/pressly/goose/v3/cmd/goose@latest \
+make migrate
+```
+
+Or directly with `goose`:
+
+```sh
+go run github.com/pressly/goose/v3/cmd/goose@v3.22.1 \
   -dir ./migrations postgres "$DATABASE_URL" up
 ```
 

@@ -53,9 +53,21 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/sync/status", handleSyncStatus(deps))
 		r.Get("/sites", handleListSites(deps))
 		r.Get("/devices", handleListDevices(deps))
+
+		r.Post("/devices/{id}/actions", handleWriteDisabled)
+		r.Post("/clients/{id}/actions", handleWriteDisabled)
 	})
 
 	return r
+}
+
+// handleWriteDisabled is the gated write stub (ZENI-19): write operations are
+// not enabled in phase 1, so the route immediately rejects with 403 forbidden
+// and details.reason: write_disabled without parsing the body or touching UniFi.
+func handleWriteDisabled(w http.ResponseWriter, r *http.Request) {
+	writeError(w, r, CodeForbidden, "write operations are not enabled", map[string]any{
+		"reason": "write_disabled",
+	})
 }
 
 // handleHealth is a liveness probe: it reports only that the process is up and

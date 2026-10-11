@@ -31,8 +31,9 @@ type siteListBody struct {
 func handleListSites(deps Dependencies) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		fields := fieldErrors{}
-		params := parseListParams(r, fields)
 		values := r.URL.Query()
+		validateAllowedParams(fields, values, "page", "page_size", "order", "sort", "q")
+		params := parseListParams(r, fields)
 
 		query := inventory.SiteQuery{
 			Page:     params.Page,
