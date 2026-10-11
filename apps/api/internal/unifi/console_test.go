@@ -98,6 +98,12 @@ func TestConsoleClientsPagination(t *testing.T) {
 	if clients[0].Hostname != "laptop-1" || clients[0].APID != "cdev-1" {
 		t.Fatalf("unexpected client[0]: %+v", clients[0])
 	}
+	if clients[0].MAC != "aa:bb:cc:00:00:10" || clients[0].Type != "WIRELESS" || !clients[0].Connected {
+		t.Fatalf("unexpected client[0] normalized fields: MAC=%q Type=%q Connected=%v", clients[0].MAC, clients[0].Type, clients[0].Connected)
+	}
+	if clients[1].MAC != "aa:bb:cc:00:00:11" || clients[1].Type != "WIRED" || !clients[1].Connected {
+		t.Fatalf("unexpected client[1] normalized fields: MAC=%q Type=%q Connected=%v", clients[1].MAC, clients[1].Type, clients[1].Connected)
+	}
 	// v1 does not expose these; stay at the zero value rather than inventing data.
 	if clients[0].SSID != "" || clients[0].SignalDBm != 0 {
 		t.Fatalf("SSID/SignalDBm must stay unset: %+v", clients[0])
@@ -156,5 +162,42 @@ func TestConsoleBaseURLDerivedFromCloud(t *testing.T) {
 	c := newTestConsole(t, srv) // sets ConsoleBaseURL directly
 	if err := c.Health(context.Background()); err != nil {
 		t.Fatalf("Health with explicit ConsoleBaseURL: %v", err)
+	}
+}
+
+func TestConsoleClientMissingIdIsSchemaDrift(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"offset":0,"limit":2,"count":1,"totalCount":1,"data":[{"name":"test"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+	c := newTestConsole(t, srv)
+
+	_, err := c.ListClients(context.Background(), "csite-1")
+	if !errors.Is(err, &Error{Kind: ErrSchemaDrift}) {
+		t.Fatalf("err = %v, want ErrSchemaDrift", err)
+	}
+}
+
+func TestNormalizeMAC(t *testing.T) {
+	cases := []struct {
+		input string
+		want  string
+	}{
+		{"AA:BB:CC:00:00:10", "aa:bb:cc:00:00:10"},
+		{"aa:bb:cc:00:00:10", "aa:bb:cc:00:00:10"},
+		{"AA-BB-CC-00-00-10", "aa:bb:cc:00:00:10"},
+		{"aabbcc000010", "aa:bb:cc:00:00:10"},
+		{"AABBCC000010", "aa:bb:cc:00:00:10"},
+		{"aabb.cc00.0010", "aa:bb:cc:00:00:10"},
+		{"", ""},
+		{"   ", ""},
+		{"custom-mac", "custom-mac"},
+	}
+	for _, tc := range cases {
+		got := normalizeMAC(tc.input)
+		if got != tc.want {
+			t.Errorf("normalizeMAC(%q) = %q, want %q", tc.input, got, tc.want)
+		}
 	}
 }

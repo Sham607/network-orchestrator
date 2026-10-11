@@ -63,10 +63,13 @@ type ClientInfo struct {
 	MAC         string
 	Hostname    string
 	IP          string
+	Type        string // WIRELESS | WIRED
+	AccessType  string
 	APID        string
 	SSID        string
 	SignalDBm   int
 	ConnectedAt time.Time
+	Connected   bool
 	Raw         json.RawMessage
 }
 

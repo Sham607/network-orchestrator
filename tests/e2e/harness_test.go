@@ -516,6 +516,8 @@ func mockClients(siteID string) []map[string]any {
 	return []map[string]any{
 		{"type": "WIRELESS", "id": "e2e-client-1", "name": "laptop", "connectedAt": "2026-10-06T15:00:00Z",
 			"ipAddress": "10.0.0.50", "macAddress": "aa:bb:cc:00:00:50", "uplinkDeviceId": "e2e-dev-1"},
+		{"type": "WIRED", "id": "e2e-client-2", "name": "workstation", "connectedAt": "2026-10-06T15:05:00Z",
+			"ipAddress": "10.0.0.51", "macAddress": "aa:bb:cc:00:00:51", "uplinkDeviceId": "e2e-dev-2"},
 	}
 }
 

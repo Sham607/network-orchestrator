@@ -443,3 +443,30 @@ func containsAny(s string, subs ...string) bool {
 	}
 	return false
 }
+
+// normalizeMAC formats a raw MAC address as lowercase colon-separated (e.g. aa:bb:cc:dd:ee:ff).
+// If raw is empty or cannot be parsed into 6 hex octets, it returns trimmed lowercase raw.
+func normalizeMAC(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	clean := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			return r
+		}
+		return -1
+	}, raw)
+	if len(clean) == 12 {
+		var sb strings.Builder
+		sb.Grow(17)
+		for i := 0; i < 12; i += 2 {
+			if i > 0 {
+				sb.WriteByte(':')
+			}
+			sb.WriteString(strings.ToLower(clean[i : i+2]))
+		}
+		return sb.String()
+	}
+	return strings.ToLower(raw)
+}

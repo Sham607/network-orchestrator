@@ -26,6 +26,7 @@ apps/web/.playwright/
 # Local agent/tooling state
 .multica/
 .pi/
+.forgeguard/
 
 # Editor / OS
 .idea/

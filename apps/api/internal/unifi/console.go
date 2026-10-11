@@ -152,11 +152,14 @@ func (c *consoleClient) ListClients(ctx context.Context, siteID string) ([]Clien
 		out = append(out, ClientInfo{
 			ID:          cl.ID,
 			SiteID:      siteID,
-			MAC:         cl.MACAddress,
+			MAC:         normalizeMAC(cl.MACAddress),
 			Hostname:    cl.Name,
 			IP:          cl.IPAddress,
+			Type:        strings.ToUpper(strings.TrimSpace(cl.Type)),
+			AccessType:  strings.ToUpper(strings.TrimSpace(cl.Access.Type)),
 			APID:        cl.UplinkDevice,
 			ConnectedAt: connected,
+			Connected:   true,
 			Raw:         mustRaw(cl),
 			// SSID and SignalDBm stay zero: Integration API v1 does not
 			// expose them (ADR-001 "Konsekuensi", docs/data-model.md §4.5).
