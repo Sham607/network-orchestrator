@@ -211,7 +211,15 @@ cache site tidak boleh mengubah/menghilangkan jejak. Aplikasi tidak pernah
   selalu ada di `raw` sehingga tidak ada informasi yang hilang bila surface
   telemetry baru ditemukan.
 - `networks.management/enabled/is_default/origin/configurable` berasal langsung
-  dari response `/networks/{id}` yang terdokumentasi di ADR-001.
+  dari response `/networks/{id}` yang terdokumentasi di ADR-001. Dua kolomnya
+  nullable karena nilainya tidak selalu dilaporkan: `origin` dan `configurable`
+  berasal dari objek `metadata` yang boleh tidak ada sama sekali, dan
+  `management`/`vlan_id` tidak dilaporkan untuk network tipe WAN. Nilai yang
+  tidak dilaporkan disimpan `NULL` dan disajikan `null` — bukan `false`/`0`,
+  karena "UniFi tidak mengatakan" bukan klaim "tidak configurable".
+  `management` dan `metadata.origin` dinormalisasi (`trim` + upper-case) di
+  adapter, sehingga filter `?management=GATEWAY` tidak perlu tahu varian
+  penulisan controller.
 
 ---
 

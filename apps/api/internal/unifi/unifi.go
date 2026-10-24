@@ -82,7 +82,7 @@ type Network struct {
 	Enabled      bool
 	IsDefault    bool
 	Origin       string
-	Configurable bool
+	Configurable *bool // nil when the console omits metadata.configurable
 	Raw          json.RawMessage
 }
 

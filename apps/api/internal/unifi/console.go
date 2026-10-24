@@ -71,9 +71,12 @@ type consoleNetworkEntry struct {
 	Name       string `json:"name"`
 	Enabled    bool   `json:"enabled"`
 	VLANID     int    `json:"vlanId"`
-	Metadata   *struct {
+	// Metadata, and its configurable flag, are both optional in the payload: a
+	// network the console reports without them has no value to publish, which is
+	// null rather than "not configurable".
+	Metadata *struct {
 		Origin       string `json:"origin"`
-		Configurable bool   `json:"configurable"`
+		Configurable *bool  `json:"configurable"`
 	} `json:"metadata"`
 	Default bool `json:"default"`
 }
@@ -187,9 +190,9 @@ func (c *consoleClient) ListNetworks(ctx context.Context, siteID string) ([]Netw
 	out := make([]Network, 0, len(items))
 	for _, n := range items {
 		var origin string
-		var configurable bool
+		var configurable *bool
 		if n.Metadata != nil {
-			origin = n.Metadata.Origin
+			origin = strings.ToUpper(strings.TrimSpace(n.Metadata.Origin))
 			configurable = n.Metadata.Configurable
 		}
 		out = append(out, Network{
@@ -197,7 +200,7 @@ func (c *consoleClient) ListNetworks(ctx context.Context, siteID string) ([]Netw
 			SiteID:       siteID,
 			Name:         n.Name,
 			VLAN:         n.VLANID,
-			Management:   n.Management,
+			Management:   strings.ToUpper(strings.TrimSpace(n.Management)),
 			Enabled:      n.Enabled,
 			IsDefault:    n.Default,
 			Origin:       origin,

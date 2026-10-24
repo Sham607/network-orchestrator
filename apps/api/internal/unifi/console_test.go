@@ -80,10 +80,12 @@ func TestConsoleHealthSitesDevicesNetworks(t *testing.T) {
 	if len(networks) != 2 || networks[0].VLAN != 1 || !networks[0].Enabled || networks[1].Name != "Guest" {
 		t.Fatalf("unexpected networks: %+v", networks)
 	}
-	if networks[0].Management != "GATEWAY" || !networks[0].IsDefault || networks[0].Origin != "SYSTEM_DEFINED" || !networks[0].Configurable {
+	if networks[0].Management != "GATEWAY" || !networks[0].IsDefault || networks[0].Origin != "SYSTEM_DEFINED" ||
+		networks[0].Configurable == nil || !*networks[0].Configurable {
 		t.Fatalf("unexpected network[0] completeness fields: %+v", networks[0])
 	}
-	if networks[1].Management != "SWITCH" || networks[1].IsDefault || networks[1].Origin != "USER_DEFINED" || !networks[1].Configurable {
+	if networks[1].Management != "SWITCH" || networks[1].IsDefault || networks[1].Origin != "USER_DEFINED" ||
+		networks[1].Configurable == nil || !*networks[1].Configurable {
 		t.Fatalf("unexpected network[1] completeness fields: %+v", networks[1])
 	}
 }
@@ -211,20 +213,24 @@ func TestNormalizeMAC(t *testing.T) {
 func TestConsoleListNetworksParsesADR001Payload(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		// ADR-001 payload with two networks: one with metadata, one without metadata
+		// Three rows cover the shapes the console is known to send: canonical
+		// metadata, no metadata at all, and metadata that omits configurable.
+		// The first row also arrives with the casing and padding variance the
+		// controller has been seen to produce, which the adapter normalises so
+		// that a management filter matches exactly one value.
 		_, _ = w.Write([]byte(`{
 			"offset": 0,
 			"limit": 200,
-			"count": 2,
-			"totalCount": 2,
+			"count": 3,
+			"totalCount": 3,
 			"data": [
 				{
-					"management": "GATEWAY",
+					"management": " gateway ",
 					"id": "net-adr-1",
 					"name": "Corporate",
 					"enabled": true,
 					"vlanId": 10,
-					"metadata": {"origin": "SYSTEM_DEFINED", "configurable": true},
+					"metadata": {"origin": "system_defined", "configurable": true},
 					"default": true
 				},
 				{
@@ -233,6 +239,15 @@ func TestConsoleListNetworksParsesADR001Payload(t *testing.T) {
 					"name": "IoT",
 					"enabled": false,
 					"vlanId": 30,
+					"default": false
+				},
+				{
+					"management": "UNMANAGED",
+					"id": "net-adr-3",
+					"name": "Lab",
+					"enabled": true,
+					"vlanId": 40,
+					"metadata": {"origin": "USER_DEFINED"},
 					"default": false
 				}
 			]
@@ -245,19 +260,25 @@ func TestConsoleListNetworksParsesADR001Payload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListNetworks: %v", err)
 	}
-	if len(networks) != 2 {
-		t.Fatalf("got %d networks, want 2", len(networks))
+	if len(networks) != 3 {
+		t.Fatalf("got %d networks, want 3", len(networks))
 	}
 
 	n1 := networks[0]
 	if n1.ID != "net-adr-1" || n1.Name != "Corporate" || n1.VLAN != 10 || !n1.Enabled ||
-		n1.Management != "GATEWAY" || !n1.IsDefault || n1.Origin != "SYSTEM_DEFINED" || !n1.Configurable {
-		t.Fatalf("unexpected n1: %+v", n1)
+		n1.Management != "GATEWAY" || !n1.IsDefault || n1.Origin != "SYSTEM_DEFINED" ||
+		n1.Configurable == nil || !*n1.Configurable {
+		t.Fatalf("unexpected n1 (casing and padding should be normalised): %+v", n1)
 	}
 
 	n2 := networks[1]
 	if n2.ID != "net-adr-2" || n2.Name != "IoT" || n2.VLAN != 30 || n2.Enabled ||
-		n2.Management != "SWITCH" || n2.IsDefault || n2.Origin != "" || n2.Configurable {
-		t.Fatalf("unexpected n2 (metadata absent should yield zero values): %+v", n2)
+		n2.Management != "SWITCH" || n2.IsDefault || n2.Origin != "" || n2.Configurable != nil {
+		t.Fatalf("unexpected n2 (metadata absent must leave configurable null): %+v", n2)
+	}
+
+	n3 := networks[2]
+	if n3.Management != "UNMANAGED" || n3.Origin != "USER_DEFINED" || n3.Configurable != nil {
+		t.Fatalf("unexpected n3 (configurable omitted must stay null): %+v", n3)
 	}
 }
