@@ -31,8 +31,8 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 				{ID: "client-2", SiteID: "site-alpha", MAC: "aa:bb:cc:dd:ee:02", Hostname: "office-desktop", APID: "dev-2", ConnectedAt: base.Add(time.Minute)},
 			},
 			Networks: []unifi.Network{
-				{ID: "net-1", SiteID: "site-alpha", Name: "Default", VLAN: 1, Management: "GATEWAY", Enabled: true, IsDefault: true, Origin: "SYSTEM_DEFINED", Configurable: true},
-				{ID: "net-2", SiteID: "site-alpha", Name: "Guest", VLAN: 20, Management: "SWITCH", Enabled: false, IsDefault: false, Origin: "USER_DEFINED", Configurable: true},
+				{ID: "net-1", SiteID: "site-alpha", Name: "Default", VLAN: 1, Management: "GATEWAY", Enabled: true, IsDefault: true, Origin: "SYSTEM_DEFINED", Configurable: boolPtr(true)},
+				{ID: "net-2", SiteID: "site-alpha", Name: "Guest", VLAN: 20, Management: "SWITCH", Enabled: false, IsDefault: false, Origin: "USER_DEFINED", Configurable: boolPtr(true)},
 			},
 		},
 		{
@@ -48,7 +48,7 @@ func seedReadCache(t *testing.T, repo *PostgresRepository) {
 				{ID: "client-3", SiteID: "site-beta", MAC: "aa:bb:cc:dd:ee:03", Hostname: "beta-phone", APID: "dev-3", ConnectedAt: base.Add(2 * time.Minute)},
 			},
 			Networks: []unifi.Network{
-				{ID: "net-3", SiteID: "site-beta", Name: "IoT", VLAN: 30, Management: "GATEWAY", Enabled: true, IsDefault: false, Origin: "USER_DEFINED", Configurable: true},
+				{ID: "net-3", SiteID: "site-beta", Name: "IoT", VLAN: 30, Management: "GATEWAY", Enabled: true, IsDefault: false, Origin: "USER_DEFINED", Configurable: boolPtr(true)},
 			},
 		},
 		{
@@ -435,7 +435,9 @@ func TestPostgresListNetworksFiltersAndCombines(t *testing.T) {
 		{"vlan_id", NetworkQuery{VLANID: ptr(20)}, []string{"Guest"}},
 		{"management", NetworkQuery{Management: "GATEWAY"}, []string{"Default", "IoT"}},
 		{"enabled true", NetworkQuery{Enabled: ptr(true)}, []string{"Default", "IoT"}},
-		{"enabled false", NetworkQuery{Enabled: ptr(false)}, []string{"Guest"}},
+		// Untagged (site-gamma) was seeded without an enabled flag, and the write
+		// path always stores the bool the console reported, so it is false here.
+		{"enabled false", NetworkQuery{Enabled: ptr(false)}, []string{"Guest", "Untagged"}},
 		{"combined narrow to empty", NetworkQuery{SiteID: alpha, Management: "GATEWAY", VLANID: ptr(999)}, nil},
 	}
 
@@ -479,6 +481,22 @@ func TestPostgresGetNetworkMatchesLocalID(t *testing.T) {
 		network.Origin == nil || *network.Origin != "SYSTEM_DEFINED" ||
 		network.Configurable == nil || !*network.Configurable {
 		t.Fatalf("network = %+v, want Default gateway network with all fields", network)
+	}
+
+	// A network the console reported without metadata must read back with the
+	// fields it never sent left null, configurable included: null is "UniFi did
+	// not say", which is not the same answer as false.
+	id = networkUUID(t, repo, "net-4")
+	network, ok, err = repo.GetNetwork(ctx, id)
+	if err != nil {
+		t.Fatalf("get network without metadata: %v", err)
+	}
+	if !ok {
+		t.Fatalf("GetNetwork(%s) ok = false, want true", id)
+	}
+	if network.Name != "Untagged" || network.VLANID != nil || network.Management != nil ||
+		network.Origin != nil || network.Configurable != nil {
+		t.Fatalf("network = %+v, want every unreported field null", network)
 	}
 
 	_, ok, err = repo.GetNetwork(ctx, "00000000-0000-0000-0000-000000000000")
