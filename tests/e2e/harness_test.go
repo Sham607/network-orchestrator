@@ -45,9 +45,11 @@ const (
 	e2eWirelessUnifiID = "e2e-client-1"
 	e2eWiredUnifiID    = "e2e-client-2"
 
-	e2eNetworkTotal = 2
+	e2eNetworkTotal = 3
 	e2eDefaultNetID = "e2e-net-1"
 	e2eGuestNetID   = "e2e-net-2"
+	e2eBareNetID    = "e2e-net-3"
+	e2eBareNetName  = "WAN Link"
 )
 
 // stackOptions controls one API-under-test instance.
@@ -651,6 +653,11 @@ func mockClients(siteID string, connectedSince time.Time) []map[string]any {
 	}
 }
 
+// mockNetworks is the console's answer for one site. The three rows cover what
+// the cache has to survive: canonical metadata, casing/padding variance from the
+// controller (Guest reports " switch " and a lower-case origin), and a network the
+// console reports with no VLAN, no management and no metadata at all (WAN Link) —
+// those fields must reach the API as null, not as invented zero values.
 func mockNetworks(siteID string) []map[string]any {
 	return []map[string]any{
 		{
@@ -659,9 +666,12 @@ func mockNetworks(siteID string) []map[string]any {
 			"metadata": map[string]any{"origin": "SYSTEM_DEFINED", "configurable": true},
 		},
 		{
-			"management": "SWITCH", "id": "e2e-net-2", "name": "Guest", "enabled": false,
+			"management": " switch ", "id": "e2e-net-2", "name": "Guest", "enabled": false,
 			"vlanId": 20, "default": false,
-			"metadata": map[string]any{"origin": "USER_DEFINED", "configurable": true},
+			"metadata": map[string]any{"origin": "user_defined", "configurable": true},
+		},
+		{
+			"id": "e2e-net-3", "name": "WAN Link", "enabled": true, "default": false,
 		},
 	}
 }
