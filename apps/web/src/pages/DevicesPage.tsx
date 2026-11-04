@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Radio, Server, Shield, Activity, RefreshCw, Eye, FileText } from 'lucide-react'
+import { Radio, Server, Shield, Activity, RefreshCw, Eye, FileText, Sliders } from 'lucide-react'
 import { AuditReportModal } from '../components/AuditReportModal'
-
+import { BatchOptimizerModal } from '../components/BatchOptimizerModal'
 import { useDevices, useSites } from '../api/queries'
 import type { Device, DeviceListQuery } from '../api/types'
 import { DeviceDrawer } from '../components/DeviceDrawer'
@@ -21,7 +21,7 @@ export default function DevicesPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
   const [isReportOpen, setIsReportOpen] = useState(false)
-
+  const [isBatchOpen, setIsBatchOpen] = useState(false)
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
@@ -80,7 +80,17 @@ export default function DevicesPage() {
             Source: <code>GET /api/v1/devices</code> — filtered and paginated by the API, not in the browser.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            className="button inline-flex items-center gap-2"
+            onClick={() => setIsBatchOpen(true)}
+            disabled={!devices.data || apCount === 0}
+            title="Sequentially optimize AP channels with 15s safe delays"
+          >
+            <Sliders className="h-4 w-4 text-primary" />
+            <span>Auto-Optimize Channels</span>
+          </button>
           <button
             type="button"
             className="button inline-flex items-center gap-2"
@@ -315,6 +325,9 @@ export default function DevicesPage() {
 
       {/* Audit Report Modal */}
       <AuditReportModal devices={items} isOpen={isReportOpen} onClose={() => setIsReportOpen(false)} />
+
+      {/* Batch Sequential Optimizer Modal */}
+      <BatchOptimizerModal devices={items} isOpen={isBatchOpen} onClose={() => setIsBatchOpen(false)} />
     </section>
   )
 }

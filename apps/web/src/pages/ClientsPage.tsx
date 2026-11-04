@@ -1,9 +1,10 @@
-import { type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Users, RefreshCw, Wifi, Cable } from 'lucide-react'
 
 import { useClients, useSites, useSyncStatus } from '../api/queries'
 import type { Client, ClientListQuery, SyncStatus } from '../api/types'
+import { ClientDrawer } from '../components/ClientDrawer'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
@@ -32,7 +33,7 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
 
 export default function ClientsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null)
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
@@ -261,7 +262,11 @@ export default function ClientsPage() {
               </thead>
               <tbody>
                 {visibleRows.map((client) => (
-                  <tr key={client.id} className="hover:bg-muted/40 transition-colors">
+                  <tr
+                    key={client.id}
+                    onClick={() => setSelectedClient(client)}
+                    className="cursor-pointer hover:bg-muted/40 transition-colors"
+                  >
                     <th scope="row" className="font-semibold text-foreground">
                       {client.hostname ?? <UnknownHost client={client} />}
                     </th>
@@ -306,6 +311,9 @@ export default function ClientsPage() {
             busy={clients.isFetching}
             onPageChange={goToPage}
           />
+
+      {/* Client Inspection Drawer with Roaming Timeline */}
+      <ClientDrawer client={selectedClient} onClose={() => setSelectedClient(null)} />
         </>
       )}
     </section>

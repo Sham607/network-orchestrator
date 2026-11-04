@@ -1,14 +1,20 @@
-import { Globe, RefreshCw, Clock, Network } from 'lucide-react'
+import { useState } from 'react'
+import { Globe, RefreshCw, Clock, Network, Radio, Activity } from 'lucide-react'
 
 import { useSites } from '../api/queries'
+import type { Site } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { StatCard } from '../components/StatCard'
+import { RFHeatmapModal } from '../components/RFHeatmapModal'
+import { WANHealthModal } from '../components/WANHealthModal'
 
 const UNKNOWN = <span className="unknown">unknown</span>
 
 export default function SitesPage() {
   const { data, error, isPending, isFetching, refetch } = useSites()
+  const [rfSite, setRfSite] = useState<Site | null>(null)
+  const [wanSite, setWanSite] = useState<Site | null>(null)
 
   const totalSites = data?.pagination.total ?? 0
   const items = data?.data ?? []
@@ -84,6 +90,7 @@ export default function SitesPage() {
                   <th scope="col">Timezone</th>
                   <th scope="col">Gateway MAC</th>
                   <th scope="col">Synced at</th>
+                  <th scope="col" className="text-right">Diagnostics</th>
                 </tr>
               </thead>
               <tbody>
@@ -113,6 +120,26 @@ export default function SitesPage() {
                       )}
                     </td>
                     <td className="text-xs text-muted-foreground">{site.synced_at}</td>
+                    <td className="text-right space-x-1.5" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => setRfSite(site)}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded bg-muted/70 hover:bg-muted text-foreground transition-colors"
+                        title="Analyze RF Spectrum"
+                      >
+                        <Radio className="h-3 w-3 text-primary" />
+                        <span>RF Spectrum</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setWanSite(site)}
+                        className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-1 rounded bg-muted/70 hover:bg-muted text-foreground transition-colors"
+                        title="View WAN Uplink Health"
+                      >
+                        <Activity className="h-3 w-3 text-emerald-500" />
+                        <span>WAN Health</span>
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -126,6 +153,22 @@ export default function SitesPage() {
           )}
         </>
       )}
+
+      {/* RF Spectrum Heatmap Modal */}
+      <RFHeatmapModal
+        siteId={rfSite?.id ?? null}
+        siteName={rfSite?.name ?? ''}
+        isOpen={Boolean(rfSite)}
+        onClose={() => setRfSite(null)}
+      />
+
+      {/* WAN Health & Flapping Monitor Modal */}
+      <WANHealthModal
+        siteId={wanSite?.id ?? null}
+        siteName={wanSite?.name ?? ''}
+        isOpen={Boolean(wanSite)}
+        onClose={() => setWanSite(null)}
+      />
     </section>
   )
 }

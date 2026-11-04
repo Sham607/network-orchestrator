@@ -66,6 +66,7 @@ type NetworkQuery struct {
 // exposes the control plane's own id, not UniFi's (ADR-003 §2, §5).
 type Site struct {
 	ID          string
+	ConsoleID   string
 	Name        string
 	Description *string
 	Timezone    *string
@@ -311,6 +312,26 @@ func (r *PostgresRepository) ListSites(ctx context.Context, q SiteQuery) (SitePa
 		return SitePage{}, fmt.Errorf("inventory: read sites: %w", err)
 	}
 	return page, nil
+}
+
+const getSiteSQL = `
+SELECT id, name, description, timezone, gateway_mac, COALESCE(console_id, ''), synced_at
+FROM sites
+WHERE id = $1`
+
+// GetSite returns one cached site by its local id. ok is false when no row matches.
+func (r *PostgresRepository) GetSite(ctx context.Context, id string) (Site, bool, error) {
+	var s Site
+	err := r.pool.QueryRow(ctx, getSiteSQL, id).Scan(
+		&s.ID, &s.Name, &s.Description, &s.Timezone, &s.GatewayMAC, &s.ConsoleID, &s.SyncedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Site{}, false, nil
+		}
+		return Site{}, false, fmt.Errorf("inventory: get site %s: %w", id, err)
+	}
+	return s, true, nil
 }
 
 // ListDevices returns one page of the cached devices.

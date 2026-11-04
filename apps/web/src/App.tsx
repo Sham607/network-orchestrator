@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   AlertCircle,
   ExternalLink,
+  GitFork,
 } from 'lucide-react'
 
 import { useSyncStatus } from './api/queries'
@@ -18,6 +19,7 @@ import ClientsPage from './pages/ClientsPage'
 import DevicesPage from './pages/DevicesPage'
 import NetworksPage from './pages/NetworksPage'
 import SitesPage from './pages/SitesPage'
+import TopologyPage from './pages/TopologyPage'
 
 export default function App() {
   const [darkMode, setDarkMode] = useState<boolean>(() => {
@@ -47,6 +49,7 @@ export default function App() {
     if (path.startsWith('/sites')) return 'Sites & Locations'
     if (path.startsWith('/networks')) return 'Networks & VLANs'
     if (path.startsWith('/clients')) return 'Connected Clients'
+    if (path.startsWith('/topology')) return 'Network Topology Graph'
     return 'Dashboard'
   }
 
@@ -131,6 +134,20 @@ export default function App() {
             >
               <NetworkIcon className="h-4 w-4" />
               <span>Networks</span>
+            </NavLink>
+
+            <NavLink
+              to="/topology"
+              className={({ isActive }) =>
+                `flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                  isActive
+                    ? 'bg-primary text-primary-foreground shadow-sm'
+                    : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                }`
+              }
+            >
+              <GitFork className="h-4 w-4" />
+              <span>Topology</span>
             </NavLink>
           </nav>
         </div>
@@ -226,6 +243,7 @@ export default function App() {
               <Route path="/devices" element={<DevicesPage />} />
               <Route path="/clients" element={<ClientsPage />} />
               <Route path="/networks" element={<NetworksPage />} />
+              <Route path="/topology" element={<TopologyPage />} />
               <Route path="*" element={<NotFoundPage />} />
             </Routes>
           </div>

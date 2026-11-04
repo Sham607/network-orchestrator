@@ -30,3 +30,42 @@ export type SiteListQuery = NonNullable<paths['/sites']['get']['parameters']['qu
 export type DeviceListQuery = NonNullable<paths['/devices']['get']['parameters']['query']>
 export type ClientListQuery = NonNullable<paths['/clients']['get']['parameters']['query']>
 export type NetworkListQuery = NonNullable<paths['/networks']['get']['parameters']['query']>
+
+export interface ChannelMetric {
+  channel: number
+  band: string
+  count: number
+  status: 'clean' | 'moderate' | 'congested'
+}
+
+export interface RogueAPItem {
+  bssid: string
+  essid: string
+  channel: number
+  band: string
+  rssi: number
+  signal: number
+}
+
+export interface RFScanResponse {
+  site_id: string
+  site_name: string
+  total_rogue_aps: number
+  cleanest_5g: number
+  cleanest_24g: number
+  channels_5g: ChannelMetric[]
+  channels_24g: ChannelMetric[]
+  strongest_interferers: RogueAPItem[]
+}
+
+export interface WANHealthResponse {
+  site_id: string
+  site_name: string
+  gateway_mac: string
+  status: 'healthy' | 'flapping_warning' | 'degraded'
+  primary_wan: string
+  latency_ms: number
+  packet_loss_pct: number
+  drops_last_24h: number
+  uptime_pct: number
+}

@@ -10,8 +10,10 @@ import type {
   DeviceListQuery,
   NetworkList,
   NetworkListQuery,
+  RFScanResponse,
   SiteList,
   SyncStatus,
+  WANHealthResponse,
 } from './types'
 
 // Polling is the phase-1 realtime mechanism (ADR-002 §4): the QueryClient
@@ -83,5 +85,21 @@ export function useDeviceAction() {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['devices'] })
     },
+  })
+}
+
+export function useSiteRFScan(siteId: string | null) {
+  return useQuery({
+    queryKey: ['site-rf-scan', siteId],
+    queryFn: ({ signal }) => apiGet<RFScanResponse>(`/sites/${siteId}/rf-scan`, undefined, signal),
+    enabled: Boolean(siteId),
+  })
+}
+
+export function useSiteWANHealth(siteId: string | null) {
+  return useQuery({
+    queryKey: ['site-wan-health', siteId],
+    queryFn: ({ signal }) => apiGet<WANHealthResponse>(`/sites/${siteId}/wan-health`, undefined, signal),
+    enabled: Boolean(siteId),
   })
 }

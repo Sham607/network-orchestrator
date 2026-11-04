@@ -12,10 +12,21 @@ import (
 	"time"
 )
 
+// RogueAP holds environmental rogue/neighbor AP scan data.
+type RogueAP struct {
+	BSSID   string `json:"bssid"`
+	ESSID   string `json:"essid"`
+	Channel int    `json:"channel"`
+	Band    string `json:"band"`
+	RSSI    int    `json:"rssi"`
+	Signal  int    `json:"signal"`
+}
+
 // Writer is the interface for executing operational actions against UniFi devices.
 type Writer interface {
 	RestartDevice(ctx context.Context, consoleID, mac string) error
 	TuneRadio(ctx context.Context, consoleID, apID, band string, channel, width int) error
+	GetRogueAPs(ctx context.Context, consoleID string) ([]RogueAP, error)
 }
 
 type unifiWriter struct {
@@ -172,4 +183,54 @@ func (w *unifiWriter) sendRequest(ctx context.Context, method, rawURL string, pa
 	}
 
 	return nil
+}
+
+func (w *unifiWriter) GetRogueAPs(ctx context.Context, consoleID string) ([]RogueAP, error) {
+	if consoleID == "" {
+		return nil, errors.New("unifi: consoleID is required for rogue AP scan")
+	}
+	rawURL := fmt.Sprintf("%s/v1/connector/consoles/%s/proxy/network/api/s/default/stat/rogueap", w.baseURL, consoleID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-API-KEY", w.apiKey)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := w.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unifi: query rogueap returned HTTP %d", resp.StatusCode)
+	}
+
+	var res struct {
+		Data []struct {
+			BSSID   string `json:"bssid"`
+			ESSID   string `json:"essid"`
+			Channel int    `json:"channel"`
+			Band    string `json:"band"`
+			RSSI    int    `json:"rssi"`
+			Signal  int    `json:"signal"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return nil, err
+	}
+
+	result := make([]RogueAP, len(res.Data))
+	for i, r := range res.Data {
+		result[i] = RogueAP{
+			BSSID:   r.BSSID,
+			ESSID:   r.ESSID,
+			Channel: r.Channel,
+			Band:    r.Band,
+			RSSI:    r.RSSI,
+			Signal:  r.Signal,
+		}
+	}
+	return result, nil
 }

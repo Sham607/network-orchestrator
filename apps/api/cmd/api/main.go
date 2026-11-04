@@ -179,11 +179,11 @@ func run() error {
 	logger.Info("client_events retention job started", "module", "inventory",
 		"retention", cfg.ClientEventsRetention.String(), "interval", cfg.ClientEventsPruneInterval.String())
 
-	var writer unifi.Writer
+	var devWriter api.DeviceWriter
 	if cfg.UnifiSMAPIKey != "" {
 		w, err := unifi.NewWriter("", cfg.UnifiSMAPIKey, cfg.UnifiCAFile)
 		if err == nil {
-			writer = w
+			devWriter = &writerAdapter{w: w}
 		} else {
 			logger.Warn("cannot initialize unifi writer", "error", err)
 		}
@@ -196,7 +196,7 @@ func run() error {
 		Sync:      syncStatus,
 		Inventory: repo,
 		Audit:     audit.NewPostgresRecorder(pool),
-		Writer:    writer,
+		Writer:    devWriter,
 	})
 
 	srv := &http.Server{
@@ -235,4 +235,35 @@ func run() error {
 			return srv.Shutdown(ctx)
 		}
 	}
+}
+
+type writerAdapter struct {
+	w unifi.Writer
+}
+
+func (a *writerAdapter) RestartDevice(ctx context.Context, consoleID, mac string) error {
+	return a.w.RestartDevice(ctx, consoleID, mac)
+}
+
+func (a *writerAdapter) TuneRadio(ctx context.Context, consoleID, apID, band string, channel, width int) error {
+	return a.w.TuneRadio(ctx, consoleID, apID, band, channel, width)
+}
+
+func (a *writerAdapter) GetRogueAPs(ctx context.Context, consoleID string) ([]api.RogueAPItem, error) {
+	items, err := a.w.GetRogueAPs(ctx, consoleID)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]api.RogueAPItem, len(items))
+	for i, it := range items {
+		res[i] = api.RogueAPItem{
+			BSSID:   it.BSSID,
+			ESSID:   it.ESSID,
+			Channel: it.Channel,
+			Band:    it.Band,
+			RSSI:    it.RSSI,
+			Signal:  it.Signal,
+		}
+	}
+	return res, nil
 }

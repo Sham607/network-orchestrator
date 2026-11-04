@@ -26,6 +26,9 @@ type fakeInventory struct {
 	clientErr      error
 	networks       inventory.NetworkPage
 	networkErr     error
+	getSite        inventory.Site
+	getSiteFound   bool
+	getSiteErr     error
 	getDevice      inventory.Device
 	getDeviceFound bool
 	getDeviceErr   error
@@ -50,6 +53,9 @@ type fakeInventory struct {
 func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inventory.SitePage, error) {
 	f.siteQueries = append(f.siteQueries, q)
 	return f.sites, f.siteErr
+}
+func (f *fakeInventory) GetSite(_ context.Context, id string) (inventory.Site, bool, error) {
+	return f.getSite, f.getSiteFound, f.getSiteErr
 }
 
 func (f *fakeInventory) ListDevices(_ context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error) {

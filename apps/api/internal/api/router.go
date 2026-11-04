@@ -27,6 +27,7 @@ type DB interface {
 // interface lets handler tests run without a database and without UniFi.
 type Inventory interface {
 	ListSites(ctx context.Context, q inventory.SiteQuery) (inventory.SitePage, error)
+	GetSite(ctx context.Context, id string) (inventory.Site, bool, error)
 	ListDevices(ctx context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error)
 	GetDevice(ctx context.Context, id string) (inventory.Device, bool, error)
 	ListClients(ctx context.Context, q inventory.ClientQuery) (inventory.ClientPage, error)
@@ -35,10 +36,20 @@ type Inventory interface {
 	GetNetwork(ctx context.Context, id string) (inventory.Network, bool, error)
 }
 
+type RogueAPItem struct {
+	BSSID   string `json:"bssid"`
+	ESSID   string `json:"essid"`
+	Channel int    `json:"channel"`
+	Band    string `json:"band"`
+	RSSI    int    `json:"rssi"`
+	Signal  int    `json:"signal"`
+}
+
 // DeviceWriter defines the operational actions the router dispatches.
 type DeviceWriter interface {
 	RestartDevice(ctx context.Context, consoleID, mac string) error
 	TuneRadio(ctx context.Context, consoleID, apID, band string, channel, width int) error
+	GetRogueAPs(ctx context.Context, consoleID string) ([]RogueAPItem, error)
 }
 
 // Dependencies are the collaborators a router needs.
@@ -66,6 +77,9 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/ready", handleReady(deps))
 		r.Get("/sync/status", handleSyncStatus(deps))
 		r.Get("/sites", handleListSites(deps))
+		r.Get("/sites/{id}", handleGetSite(deps))
+		r.Get("/sites/{id}/rf-scan", handleSiteRFScan(deps))
+		r.Get("/sites/{id}/wan-health", handleSiteWANHealth(deps))
 		r.Get("/devices", handleListDevices(deps))
 		r.Get("/devices/{id}", handleGetDevice(deps))
 		r.Get("/clients", handleListClients(deps))
