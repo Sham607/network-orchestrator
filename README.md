@@ -4,21 +4,18 @@ Internal control plane for the office UniFi ecosystem: read network state,
 cache it in Postgres, and expose it to an operator dashboard. Single-tenant,
 runs on one Linux host in the office network.
 
-**Status: phase 1, read path deployed — writes and operator auth are not.** In
-the repository and
-agreed: the stack (ADR-002), module boundaries and credential model (ADR-003),
-the UniFi access path (ADR-001), the phase-1 schema (`migrations/0001_init.sql`)
-and the phase-1 API contract (`openapi/openapi.yaml`).
+**Status: Enterprise Control Plane & Maintenance Actions Deployed.** In the
+repository and agreed: the stack (ADR-002), module boundaries and credential model
+(ADR-003), the UniFi access path (ADR-001), the phase-1 schema
+(`migrations/0001_init.sql`), and the API contract (`openapi/openapi.yaml`).
 
 Implemented in code: configuration loading and validation, structured logging,
-the error model, the read-only UniFi adapter (both transports), the inventory
-sync worker with its Postgres cache and audit trail, the three probe endpoints,
-and the cache-backed read endpoints (`sites`, `devices`, `clients`). Not
-implemented: operator auth, site/device detail, networks, and every real write.
-The contract describes them; the code does not
-serve them. See
-[API surface](#api-surface) for exactly what responds today.
-
+the error model, the dual-transport UniFi adapter (Site Manager Cloud and Cloud
+Connector Proxy), the inventory sync worker with its Postgres cache and append-only
+audit trail, probe endpoints (`health`, `ready`, `sync/status`), cache-backed read
+endpoints (`sites`, `devices`, `devices/{id}`, `clients`, `networks`), and interactive
+maintenance actions (`RESTART` and `TUNE_RADIO` for APs with safety guardrails).
+See [API surface](#api-surface) for details.
 Two consequences worth knowing before you point anything at this build:
 
 - **The cache read endpoints are unauthenticated** until operator auth lands.
@@ -176,11 +173,11 @@ parallel (`openapi/mock-expectations.md`).
 | `GET /api/v1/sites` | Sites from the cache: paged (`page`, `page_size`), sorted (`sort`, `order`), name search (`q`). | **Served** |
 | `GET /api/v1/sites/{id}` | One site. | Contract only — returns 404 |
 | `GET /api/v1/devices` | APs, switches, gateways from the cache (filter by site/status/type/mac), paged and sorted. | **Served** |
-| `GET /api/v1/devices/{id}` | One device. | Contract only — returns 404 |
+| `GET /api/v1/devices/{id}` | One device detail (model, MAC, IP, radios, firmware, uptime). | **Served** |
 | `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | **Served** |
 | `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | **Served** |
-| `POST /api/v1/devices/{id}/actions` · `POST /api/v1/clients/{id}/actions` | **Gated off** in phase 1; `403 write_disabled`. | **Served** as a stub: rejects before reading the body and never touches UniFi |
-
+| `POST /api/v1/devices/{id}/actions` | Operational device actions (`RESTART`, `TUNE_RADIO`). Strictly AP-only, audited to `audit_log`. | **Served** (`WRITE_ENABLED=true`) |
+| `POST /api/v1/clients/{id}/actions` | Client block/unblock actions. | **Gated off**; `403 write_disabled` |
 Every registered route answers an error with one shape: `{ "code", "message",
 "details" }`, where `code` is stable and machine-readable. A route that is not
 registered yet — every row marked *contract only* — falls through to the
@@ -214,43 +211,28 @@ stale and the probe stays a database check.
 
 ## Web dashboard
 
-`apps/web` is the operator SPA (React + TypeScript + Vite, ADR-002 §2). Four
-views are implemented: sites (`/sites`), devices (`/devices`), clients
-(`/clients`) and networks (`/networks`), all built against `openapi/openapi.yaml`.
+`apps/web` is the operator SPA (React 18 + TypeScript + Vite + Tailwind CSS, ADR-002 §2).
+Views are implemented for sites (`/sites`), devices (`/devices`), clients (`/clients`),
+and networks (`/networks`), all built against `openapi/openapi.yaml`.
 
-- **Types come from the contract.** `apps/web/src/api/schema.d.ts` is generated
-  by `openapi-typescript` and committed; `npm run openapi:check` (and `make
-  openapi-types` in CI) fails when it drifts from the contract. `src/api/types.ts`
-  only aliases the generated types, so no API type is maintained twice.
-- **Honest states.** `/sites`, `/devices`, `/clients` and `/networks` are all served from the
-  local cache today (ZENI-15; `/clients` in ZENI-23; `/networks` in ZENI-32).
-  The views render the API's `{ code, message, details }` verbatim — `request_id`
-  included — and say plainly when a 404 means "contract-only, not served yet", so
-  the UI stays truthful against a build that does not serve them. No fabricated
-  rows, no endless spinner.
-- **Filtering is server-side.** The devices view sends `site_id`, `status`,
-  `page` and `page_size`; the clients view sends `site_id`, `connected` and
-  `client_type`; the networks view sends `site_id`, `vlan_id`, `management` and
-  `enabled` the same way. The browser never downloads a table to filter it
-  itself — with one deliberate exception: the free-text search
-  box, because the contract exposes no free-text search for clients or networks.
-  It narrows only the rows already loaded for the current
-  page, and the UI says so rather than implying a full-dataset search.
-- **An empty cache is explained, not guessed at.** When `/clients` or `/networks` answers with
-  zero rows the view asks `/sync/status` why, and says it: if the cache was
-  filled from the UniFi **cloud** surface it states that cloud serves no clients or networks
-  (ADR-001) and that rows need `UNIFI_MODE=local` over the LAN/VPN, instead of
-  promising rows that will never arrive. That extra call is best-effort — if it
-  fails, the view falls back to "the sync worker has not written them yet".
-- **Read-only.** There is no write UI. The phase-1 action endpoints carry
-  `x-status: proposed-gated` in the contract and are not registered by the API at
-  all yet, so they answer 404 today; the contract documents `403 forbidden` with
-  `details.reason: write_disabled` for the state where they are enabled. Nothing
-  under `apps/web` can reach either one.
-- **The browser never touches UniFi.** Every call goes to our own `/api/v1`
-  (same-origin; Vite proxies it to `:8080` in dev), and no UniFi credential or
-  controller URL appears anywhere under `apps/web`.
-
+- **Enterprise NOC Layout**: Left sidebar with live UniFi Cloud sync health indicator,
+  circuit breaker status, navigation with Lucide icons, and light / dark NOC mode toggle.
+- **Executive KPI Stat Cards**: Overview cards for total devices, online/offline ratio,
+  hardware type breakdown (APs vs Switches & Gateways), site counts, and timezones.
+- **Interactive Device Drawer**: Clicking any device row slides out a detailed inspection
+  sheet with specifications, hardware attributes, and a raw cached JSON inspector.
+- **On-Demand Maintenance Actions**:
+  - **Reboot Access Point**: Safely restart hung APs (e.g. zero-client radio freeze) directly
+    from the UI with double-confirmation dialog and audit trail logging.
+  - **Radio Channel Tuning**: Interactive migration to clean Non-DFS frequencies
+    (UNII-1 Ch 36/44, UNII-3 Ch 149/157) strictly enforcing **HT40** width.
+- **Executive Audit Report (A4 Printable)**: Instant light-theme audit report modal
+  with standard UniFi branding and native browser print / save-as-PDF capability.
+- **Types come from the contract**: `apps/web/src/api/schema.d.ts` is generated
+  by `openapi-typescript` and committed; `make check` ensures zero drift.
+- **The browser never touches UniFi**: Every request goes through the internal control
+  plane `/api/v1` (same-origin, proxied by Vite in dev); no UniFi credential or controller
+  URL is ever exposed to the client.
 Tests are component-level (Vitest + Testing Library) and cover the three states
 that matter: populated list, empty list, and API error (404 and 503). Run them
 with `make test-web`.
