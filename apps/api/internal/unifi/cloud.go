@@ -27,8 +27,10 @@ type cloudSiteEntry struct {
 	HostID  string `json:"hostId"`
 	IsOwner bool   `json:"isOwner"`
 	Meta    struct {
-		Name string `json:"name"`
-		Desc string `json:"desc"`
+		Name       string `json:"name"`
+		Desc       string `json:"desc"`
+		Timezone   string `json:"timezone"`
+		GatewayMAC string `json:"gatewayMac"`
 	} `json:"meta"`
 }
 
@@ -84,14 +86,25 @@ func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 		if strings.TrimSpace(s.SiteID) == "" {
 			return nil, drift("site manager site entry is missing siteId")
 		}
+
+		siteObj := Site{
+			ID:         s.SiteID,
+			Name:       s.Meta.Name,
+			Desc:       s.Meta.Desc,
+			ConsoleID:  s.HostID,
+			Timezone:   s.Meta.Timezone,
+			GatewayMAC: normalizeMAC(s.Meta.GatewayMAC),
+			Raw:        mustRaw(s),
+		}
+
 		if idx, ok := seen[s.SiteID]; ok {
 			if s.IsOwner {
-				out[idx] = Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc, ConsoleID: s.HostID, Raw: mustRaw(s)}
+				out[idx] = siteObj
 			}
 			continue
 		}
 		seen[s.SiteID] = len(out)
-		out = append(out, Site{ID: s.SiteID, Name: s.Meta.Name, Desc: s.Meta.Desc, ConsoleID: s.HostID, Raw: mustRaw(s)})
+		out = append(out, siteObj)
 	}
 	return out, nil
 }

@@ -32,14 +32,13 @@ type Client interface {
 // Domain types are neutral: they are not the raw UniFi response shape. Raw
 // keeps the original payload for audit and schema-drift forensics only.
 type Site struct {
-	ID   string
-	Name string
-	Desc string
-	// ConsoleID is the host (console) that owns the site: the Site Manager
-	// hostId on the cloud transport, the configured console id on the console
-	// transport. It is empty only when the surface does not expose it.
-	ConsoleID string
-	Raw       json.RawMessage
+	ID         string
+	Name       string
+	Desc       string
+	ConsoleID  string
+	Timezone   string
+	GatewayMAC string
+	Raw        json.RawMessage
 }
 
 type Device struct {

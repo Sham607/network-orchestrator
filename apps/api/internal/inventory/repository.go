@@ -37,13 +37,15 @@ func NewPostgresRepository(pool *pgxpool.Pool) *PostgresRepository {
 // name is NOT NULL: an unnamed site keeps its previous name instead of failing
 // the cycle.
 const upsertSite = `
-INSERT INTO sites (unifi_site_id, console_id, sm_site_id, name, description, source, raw, synced_at)
-VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), $6, $7, $8)
+INSERT INTO sites (unifi_site_id, console_id, sm_site_id, name, description, timezone, gateway_mac, source, raw, synced_at)
+VALUES ($1, $2, NULLIF($3, ''), $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10)
 ON CONFLICT (unifi_site_id) DO UPDATE SET
     console_id  = EXCLUDED.console_id,
     sm_site_id  = EXCLUDED.sm_site_id,
     name        = EXCLUDED.name,
     description = EXCLUDED.description,
+    timezone    = COALESCE(EXCLUDED.timezone, sites.timezone),
+    gateway_mac = COALESCE(EXCLUDED.gateway_mac, sites.gateway_mac),
     source      = EXCLUDED.source,
     raw         = EXCLUDED.raw,
     synced_at   = EXCLUDED.synced_at
@@ -191,6 +193,7 @@ func (r *PostgresRepository) ApplySite(ctx context.Context, snap SiteSnapshot) e
 	var siteID string
 	if err := tx.QueryRow(ctx, upsertSite,
 		site.ID, consoleID, site.ID, name, strings.TrimSpace(site.Desc),
+		optionalText(site.Timezone), optionalText(site.GatewayMAC),
 		snap.Source, jsonPayload(site.Raw), snap.SyncedAt,
 	).Scan(&siteID); err != nil {
 		return fmt.Errorf("inventory: upsert site %s: %w", site.ID, err)

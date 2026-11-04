@@ -163,8 +163,7 @@ type NetworkPage struct {
 // can never drift. An empty filter is bound as NULL, which is how one static
 // statement serves every combination without building SQL from input.
 const (
-	sitesFilter = `($1::text IS NULL OR position(lower($1::text) IN lower(s.name)) > 0)`
-
+	sitesFilter   = `($1::text IS NULL OR position(lower($1::text) IN lower(COALESCE(NULLIF(NULLIF(s.name, 'default'), 'Default'), gw.name, s.name))) > 0)`
 	devicesFilter = `
     ($1::uuid IS NULL OR d.site_id = $1::uuid)
 AND ($2::text IS NULL OR d.status = $2::text)
@@ -190,13 +189,33 @@ AND ($4::boolean IS NULL OR n.enabled = $4::boolean)`
 )
 
 const listSitesSQL = `
-SELECT s.id::text, s.name, s.description, s.timezone, s.gateway_mac, s.synced_at
+SELECT s.id::text,
+       COALESCE(NULLIF(NULLIF(s.name, 'default'), 'Default'), gw.name, NULLIF(s.description, 'Default'), s.name),
+       COALESCE(gw.name, s.description, 'Office Gateway Console'),
+       COALESCE(s.timezone, 'Asia/Jakarta'),
+       COALESCE(s.gateway_mac, gw.mac, ''),
+       s.synced_at
 FROM sites s
+LEFT JOIN LATERAL (
+    SELECT d.name, d.mac
+    FROM devices d
+    WHERE d.site_id = s.id AND d.device_type = 'gateway'
+    LIMIT 1
+) gw ON true
 WHERE ` + sitesFilter + `
 ORDER BY %s
 LIMIT $2 OFFSET $3`
 
-const countSitesSQL = `SELECT count(*) FROM sites s WHERE ` + sitesFilter
+const countSitesSQL = `
+SELECT count(*)
+FROM sites s
+LEFT JOIN LATERAL (
+    SELECT d.name
+    FROM devices d
+    WHERE d.site_id = s.id AND d.device_type = 'gateway'
+    LIMIT 1
+) gw ON true
+WHERE ` + sitesFilter
 
 // devicesFilter is indented for this statement; both queries reindent it by
 // starting their WHERE on a new line.
@@ -315,9 +334,21 @@ func (r *PostgresRepository) ListSites(ctx context.Context, q SiteQuery) (SitePa
 }
 
 const getSiteSQL = `
-SELECT id, name, description, timezone, gateway_mac, COALESCE(console_id, ''), synced_at
-FROM sites
-WHERE id = $1`
+SELECT s.id::text,
+       COALESCE(NULLIF(NULLIF(s.name, 'default'), 'Default'), gw.name, NULLIF(s.description, 'Default'), s.name),
+       COALESCE(gw.name, s.description, 'Office Gateway Console'),
+       COALESCE(s.timezone, 'Asia/Jakarta'),
+       COALESCE(s.gateway_mac, gw.mac, ''),
+       COALESCE(s.console_id, ''),
+       s.synced_at
+FROM sites s
+LEFT JOIN LATERAL (
+    SELECT d.name, d.mac
+    FROM devices d
+    WHERE d.site_id = s.id AND d.device_type = 'gateway'
+    LIMIT 1
+) gw ON true
+WHERE s.id = $1`
 
 // GetSite returns one cached site by its local id. ok is false when no row matches.
 func (r *PostgresRepository) GetSite(ctx context.Context, id string) (Site, bool, error) {
