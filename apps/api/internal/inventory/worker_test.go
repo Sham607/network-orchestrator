@@ -101,6 +101,13 @@ func (f *fakeAudit) Record(_ context.Context, e audit.Entry) error {
 	f.entries = append(f.entries, e)
 	return nil
 }
+func (f *fakeAudit) RecordAction(_ context.Context, e audit.Entry) (int64, time.Time, error) {
+	if f.err != nil {
+		return 0, time.Time{}, f.err
+	}
+	f.entries = append(f.entries, e)
+	return int64(len(f.entries)), time.Now().UTC(), nil
+}
 
 type testClock struct {
 	mu sync.Mutex

@@ -1,17 +1,19 @@
 import { type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Network as NetworkIcon, RefreshCw, Shield, Layers } from 'lucide-react'
 
 import { useNetworks, useSites, useSyncStatus } from '../api/queries'
 import type { Network, NetworkListQuery, SyncStatus } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
+import { StatCard } from '../components/StatCard'
 import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
 const DEFAULT_PAGE_SIZE = 25
+const UNKNOWN = <span className="unknown">unknown</span>
 
-/** Parses a VLAN id string, restricting it strictly to the contract bounds 0..4094. */
 function parseVlanId(raw: string | null): number | undefined {
   if (!raw) return undefined
   const trimmed = raw.trim()
@@ -21,7 +23,6 @@ function parseVlanId(raw: string | null): number | undefined {
   return n
 }
 
-/** True when any of name, management or VLAN id contains `q` (case-insensitive). */
 function matchesQuery(network: Network, q: string): boolean {
   if (!q) return true
   const needle = q.toLowerCase()
@@ -31,14 +32,6 @@ function matchesQuery(network: Network, q: string): boolean {
   )
 }
 
-/**
- * Why the cache is empty, as far as `/sync/status` knows.
- *
- * The UniFi cloud surface does not serve networks at all (ADR-001), so on a
- * cloud deployment the rows this view reads can only ever come from
- * `UNIFI_MODE=local`. Telling the operator to wait for the sync worker there
- * would send them looking for rows that will never arrive.
- */
 function emptyCacheHint(status: SyncStatus | undefined): string {
   if (status?.unifi?.surface === 'cloud') {
     return 'The cache is filled from the UniFi cloud surface (UNIFI_MODE=cloud), which does not serve networks (ADR-001). Network rows need the console Integration API: run with UNIFI_MODE=local from the office LAN or VPN.'
@@ -46,12 +39,6 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
   return 'The API answered successfully with zero networks. Networks appear once the sync worker has written them.'
 }
 
-/**
- * Networks list, read from `GET /api/v1/networks`.
- *
- * `site_id`, `vlan_id`, `management` and `enabled` are server-side filters.
- * The free-text search is local to the current page.
- */
 export default function NetworksPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -106,31 +93,68 @@ export default function NetworksPage() {
   }
 
   const hasServerFilters = siteId !== '' || vlanId !== '' || management !== '' || enabled !== ''
-  const hasAnyFilter = hasServerFilters || q !== ''
-  const formKey = `${siteId}|${vlanId}|${management}|${enabled}|${q}|${pageSize}`
+  const hasLocalFilter = q !== ''
+  const formKey = `${siteId}|${vlanId}|${management}|${enabled}|${pageSize}`
 
   const rows = networks.data?.data ?? []
   const visibleRows = rows.filter((network) => matchesQuery(network, q))
+  const totalNetworks = networks.data?.pagination.total ?? 0
+  const enabledCount = rows.filter((n) => n.enabled).length
 
   return (
-    <section aria-labelledby="networks-heading">
-      <div className="page-header">
-        <h2 id="networks-heading">Networks</h2>
+    <section aria-labelledby="networks-heading" className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
+        <div>
+          <h2 id="networks-heading" className="text-2xl font-bold tracking-tight text-foreground">
+            Networks
+          </h2>
+          <p className="source text-sm text-muted-foreground mt-1">
+            Source: <code>GET /api/v1/networks</code> — site, VLAN id, management and enabled state
+            are filtered and paginated by the API; search below only narrows rows already on this
+            page.
+          </p>
+        </div>
         <button
           type="button"
-          className="button"
+          className="button inline-flex items-center gap-2"
           onClick={() => void networks.refetch()}
           disabled={networks.isFetching}
         >
-          {networks.isFetching ? 'Refreshing…' : 'Refresh'}
+          <RefreshCw className={`h-4 w-4 ${networks.isFetching ? 'animate-spin' : ''}`} />
+          <span>{networks.isFetching ? 'Refreshing…' : 'Refresh'}</span>
         </button>
       </div>
-      <p className="source">
-        Source: <code>GET /api/v1/networks</code> — site, VLAN id, management and enabled state are filtered
-        and paginated by the API; search below only narrows rows already on this page.
-      </p>
 
-      <form className="filters" onSubmit={applyFilters} key={formKey} aria-label="Network filters">
+      {networks.data && rows.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <StatCard
+            title="Total Networks"
+            value={totalNetworks}
+            description="VLAN configurations"
+            icon={NetworkIcon}
+          />
+          <StatCard
+            title="Enabled Status"
+            value={`${enabledCount} / ${rows.length}`}
+            description="Active subnets on current page"
+            icon={Shield}
+            badge={{ text: 'Configured', variant: 'info' }}
+          />
+          <StatCard
+            title="Isolated VLANs"
+            value={rows.filter((n) => n.vlan_id && n.vlan_id > 1).length}
+            description="VLAN ID tagged segments"
+            icon={Layers}
+          />
+        </div>
+      )}
+
+      <form
+        className="filters"
+        onSubmit={applyFilters}
+        key={formKey}
+        aria-label="Network filters"
+      >
         <div className="field">
           <label htmlFor="filter-site-id">Site id</label>
           <input
@@ -141,6 +165,7 @@ export default function NetworksPage() {
             placeholder="1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c"
             list="filter-site-id-options"
             autoComplete="off"
+            spellCheck="false"
           />
           <datalist id="filter-site-id-options">
             {siteOptions.map((site) => (
@@ -161,8 +186,9 @@ export default function NetworksPage() {
             defaultValue={vlanId}
             placeholder="e.g. 1, 10, 20"
             autoComplete="off"
+            spellCheck="false"
           />
-          <p className="field-hint">Integer 0–4094. Values outside the range are kept out of the request.</p>
+          <p className="field-hint">Integer 0--4094. Values outside the range are kept out of the request.</p>
         </div>
 
         <div className="field">
@@ -174,6 +200,7 @@ export default function NetworksPage() {
             defaultValue={management}
             placeholder="e.g. GATEWAY, SWITCH"
             autoComplete="off"
+            spellCheck="false"
           />
         </div>
 
@@ -191,21 +218,22 @@ export default function NetworksPage() {
           <input
             id="filter-q"
             name="q"
-            type="text"
+            type="search"
             defaultValue={q}
             placeholder="name, management, or VLAN id"
             autoComplete="off"
+            spellCheck="false"
           />
           <p className="field-hint">
-            Checks name, management and VLAN id of the rows already loaded for this page. The API has no
-            free-text network search yet, so this cannot reach rows on other pages — narrow with
-            site, VLAN id or management first.
+            Checks name, management and VLAN id of the rows already loaded for this page. The API
+            has no free-text network search yet, so this cannot reach rows on other pages — narrow
+            with site, VLAN id or management first.
           </p>
         </div>
 
         <div className="field">
           <label htmlFor="filter-page-size">Rows per page</label>
-          <select id="filter-page-size" name="page_size" defaultValue={String(pageSize)}>
+          <select id="filter-page-size" name="page_size" defaultValue={pageSize}>
             {PAGE_SIZES.map((size) => (
               <option key={size} value={size}>
                 {size}
@@ -222,7 +250,7 @@ export default function NetworksPage() {
             type="button"
             className="button"
             onClick={() => setSearchParams(new URLSearchParams())}
-            disabled={!hasAnyFilter && pageSize === DEFAULT_PAGE_SIZE && page === 1}
+            disabled={!hasServerFilters && !hasLocalFilter && pageSize === DEFAULT_PAGE_SIZE}
           >
             Clear
           </button>
@@ -270,29 +298,35 @@ export default function NetworksPage() {
               </thead>
               <tbody>
                 {visibleRows.map((network) => (
-                  <tr key={network.id}>
-                    <th scope="row">{network.name}</th>
-                    <td>{network.vlan_id ?? <Unknown />}</td>
-                    <td>{network.management ?? <Unknown />}</td>
+                  <tr key={network.id} className="hover:bg-muted/40 transition-colors">
+                    <th scope="row" className="font-semibold text-foreground">{network.name}</th>
+                    <td>{network.vlan_id ?? UNKNOWN}</td>
+                    <td>{network.management ?? UNKNOWN}</td>
                     <td>
                       {network.enabled === null || network.enabled === undefined ? (
-                        <Unknown />
+                        UNKNOWN
                       ) : network.enabled ? (
-                        'Enabled'
+                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                          Enabled
+                        </span>
                       ) : (
-                        'Disabled'
+                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                          <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
+                          Disabled
+                        </span>
                       )}
                     </td>
                     <td>
                       {network.is_default === null || network.is_default === undefined ? (
-                        <Unknown />
+                        UNKNOWN
                       ) : network.is_default ? (
-                        'Yes'
+                        <span className="text-xs font-semibold text-primary">Yes</span>
                       ) : (
-                        'No'
+                        <span className="text-xs text-muted-foreground">No</span>
                       )}
                     </td>
-                    <td>{network.synced_at}</td>
+                    <td className="text-xs text-muted-foreground">{network.synced_at}</td>
                   </tr>
                 ))}
               </tbody>
@@ -308,8 +342,4 @@ export default function NetworksPage() {
       )}
     </section>
   )
-}
-
-function Unknown() {
-  return <span className="unknown">unknown</span>
 }

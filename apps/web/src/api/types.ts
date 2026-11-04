@@ -17,6 +17,8 @@ export type Network = components['schemas']['Network']
 export type NetworkList = components['schemas']['NetworkList']
 export type SyncStatus = components['schemas']['SyncStatus']
 
+export type DeviceActionRequest = components['schemas']['DeviceActionRequest']
+export type ActionAccepted = components['schemas']['ActionAccepted']
 /** The single error body shape every endpoint returns: `{ code, message, details }`. */
 export type ErrorBody = components['schemas']['Error']
 /** Stable, machine-readable codes from the contract's `Error` enum. */

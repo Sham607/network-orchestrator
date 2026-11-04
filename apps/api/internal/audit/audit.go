@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -29,6 +30,7 @@ type Entry struct {
 // not as a failure of the operation being audited.
 type Recorder interface {
 	Record(ctx context.Context, e Entry) error
+	RecordAction(ctx context.Context, e Entry) (int64, time.Time, error)
 }
 
 // PostgresRecorder appends to audit_log.
@@ -41,28 +43,37 @@ func NewPostgresRecorder(pool *pgxpool.Pool) *PostgresRecorder {
 	return &PostgresRecorder{pool: pool}
 }
 
-const insertEntry = `
+const insertEntryWithReturn = `
 INSERT INTO audit_log (actor_type, actor_label, action, target_type, target_id, detail)
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)`
+VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)
+RETURNING id, created_at`
 
-// Record appends e to the trail.
-func (r *PostgresRecorder) Record(ctx context.Context, e Entry) error {
+// RecordAction appends e to the trail and returns the new audit id and timestamp.
+func (r *PostgresRecorder) RecordAction(ctx context.Context, e Entry) (int64, time.Time, error) {
 	detail := e.Detail
 	if detail == nil {
 		detail = map[string]any{}
 	}
 	payload, err := json.Marshal(detail)
 	if err != nil {
-		return fmt.Errorf("audit: encode detail: %w", err)
+		return 0, time.Time{}, fmt.Errorf("audit: encode detail: %w", err)
 	}
 	actorType := e.ActorType
 	if actorType == "" {
 		actorType = "system"
 	}
-	if _, err := r.pool.Exec(ctx, insertEntry,
+	var id int64
+	var createdAt time.Time
+	if err := r.pool.QueryRow(ctx, insertEntryWithReturn,
 		actorType, e.ActorLabel, e.Action, e.TargetType, e.TargetID, payload,
-	); err != nil {
-		return fmt.Errorf("audit: insert entry: %w", err)
+	).Scan(&id, &createdAt); err != nil {
+		return 0, time.Time{}, fmt.Errorf("audit: insert entry: %w", err)
 	}
-	return nil
+	return id, createdAt, nil
+}
+
+// Record appends e to the trail.
+func (r *PostgresRecorder) Record(ctx context.Context, e Entry) error {
+	_, _, err := r.RecordAction(ctx, e)
+	return err
 }

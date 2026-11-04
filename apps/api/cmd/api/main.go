@@ -179,12 +179,24 @@ func run() error {
 	logger.Info("client_events retention job started", "module", "inventory",
 		"retention", cfg.ClientEventsRetention.String(), "interval", cfg.ClientEventsPruneInterval.String())
 
+	var writer unifi.Writer
+	if cfg.UnifiSMAPIKey != "" {
+		w, err := unifi.NewWriter("", cfg.UnifiSMAPIKey, cfg.UnifiCAFile)
+		if err == nil {
+			writer = w
+		} else {
+			logger.Warn("cannot initialize unifi writer", "error", err)
+		}
+	}
+
 	handler := api.NewRouter(api.Dependencies{
 		Config:    cfg,
 		Logger:    logger,
 		DB:        pool,
 		Sync:      syncStatus,
 		Inventory: repo,
+		Audit:     audit.NewPostgresRecorder(pool),
+		Writer:    writer,
 	})
 
 	srv := &http.Server{

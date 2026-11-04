@@ -1,17 +1,20 @@
 import { type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
+import { Users, RefreshCw, Wifi, Cable } from 'lucide-react'
 
 import { useClients, useSites, useSyncStatus } from '../api/queries'
 import type { Client, ClientListQuery, SyncStatus } from '../api/types'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
+import { StatCard } from '../components/StatCard'
+import { StatusBadge } from '../components/StatusBadge'
 import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
 const DEFAULT_PAGE_SIZE = 25
+const UNKNOWN = <span className="unknown">unknown</span>
 
-/** True when any of hostname, MAC or IP contains `q` (case-insensitive). */
 function matchesQuery(client: Client, q: string): boolean {
   if (!q) return true
   const needle = q.toLowerCase()
@@ -20,14 +23,6 @@ function matchesQuery(client: Client, q: string): boolean {
   )
 }
 
-/**
- * Why the cache is empty, as far as `/sync/status` knows.
- *
- * The UniFi cloud surface does not serve clients at all (ADR-001), so on a
- * cloud deployment the rows this view reads can only ever come from
- * `UNIFI_MODE=local`. Telling the operator to wait for the sync worker there
- * would send them looking for rows that will never arrive.
- */
 function emptyCacheHint(status: SyncStatus | undefined): string {
   if (status?.unifi?.surface === 'cloud') {
     return 'The cache is filled from the UniFi cloud surface (UNIFI_MODE=cloud), which does not serve clients (ADR-001). Client rows need the console Integration API: run with UNIFI_MODE=local from the office LAN or VPN.'
@@ -35,15 +30,6 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
   return 'The API answered successfully with zero clients. Clients appear once the sync worker has written them.'
 }
 
-/**
- * Clients list, read from `GET /api/v1/clients`.
- *
- * `site_id`, `connected` and `client_type` are server-side filters, like the
- * devices view — the browser never downloads the whole client table to filter
- * it itself. The free-text search is the exception: the contract has no
- * hostname/IP filter for clients (only an exact `mac` match), so it narrows
- * only the rows already loaded for the current page, and says so.
- */
 export default function ClientsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -60,12 +46,8 @@ export default function ClientsPage() {
   if (clientType === 'WIRELESS' || clientType === 'WIRED') query.client_type = clientType
 
   const clients = useClients(query)
-  // Best-effort: suggestions for the site filter. A failure here must not break
-  // the client list, so the error is not surfaced as a page-level failure.
   const sites = useSites()
   const siteOptions = sites.data?.data ?? []
-  // Best-effort too: the surface that filled the cache, used only to explain an
-  // empty result. If it is unavailable, the page falls back to the generic hint.
   const sync = useSyncStatus()
 
   function applyFilters(event: FormEvent<HTMLFormElement>) {
@@ -84,7 +66,6 @@ export default function ClientsPage() {
     if (nextClientType) next.set('client_type', nextClientType)
     if (nextQ) next.set('q', nextQ)
     if (nextPageSize) next.set('page_size', nextPageSize)
-    // A filter change restarts at page 1; the old offset is meaningless.
     next.set('page', '1')
 
     setSearchParams(next)
@@ -97,29 +78,61 @@ export default function ClientsPage() {
   }
 
   const hasServerFilters = siteId !== '' || connected !== '' || clientType !== ''
-  const hasAnyFilter = hasServerFilters || q !== ''
-  const formKey = `${siteId}|${connected}|${clientType}|${q}|${pageSize}`
+  const hasLocalFilter = q !== ''
+  const formKey = `${siteId}|${connected}|${clientType}|${pageSize}`
 
   const rows = clients.data?.data ?? []
   const visibleRows = rows.filter((client) => matchesQuery(client, q))
+  const totalClients = clients.data?.pagination.total ?? 0
+  const wirelessCount = rows.filter((c) => c.client_type === 'wireless').length
+  const wiredCount = rows.filter((c) => c.client_type === 'wired').length
 
   return (
-    <section aria-labelledby="clients-heading">
-      <div className="page-header">
-        <h2 id="clients-heading">Clients</h2>
+    <section aria-labelledby="clients-heading" className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2">
+        <div>
+          <h2 id="clients-heading" className="text-2xl font-bold tracking-tight text-foreground">
+            Clients
+          </h2>
+          <p className="source text-sm text-muted-foreground mt-1">
+            Source: <code>GET /api/v1/clients</code> — site, connection state and type are filtered
+            and paginated by the API; search below only narrows rows already on this page.
+          </p>
+        </div>
         <button
           type="button"
-          className="button"
+          className="button inline-flex items-center gap-2"
           onClick={() => void clients.refetch()}
           disabled={clients.isFetching}
         >
-          {clients.isFetching ? 'Refreshing…' : 'Refresh'}
+          <RefreshCw className={`h-4 w-4 ${clients.isFetching ? 'animate-spin' : ''}`} />
+          <span>{clients.isFetching ? 'Refreshing…' : 'Refresh'}</span>
         </button>
       </div>
-      <p className="source">
-        Source: <code>GET /api/v1/clients</code> — site, connection state and type are filtered and
-        paginated by the API; search below only narrows rows already on this page.
-      </p>
+
+      {clients.data && rows.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <StatCard
+            title="Total Clients"
+            value={totalClients}
+            description="Cached active & historical clients"
+            icon={Users}
+          />
+          <StatCard
+            title="Wireless Wi-Fi"
+            value={wirelessCount}
+            description="Radio connected devices"
+            icon={Wifi}
+            badge={{ text: 'Wireless', variant: 'info' }}
+          />
+          <StatCard
+            title="Wired LAN"
+            value={wiredCount}
+            description="Ethernet port connections"
+            icon={Cable}
+          />
+        </div>
+      )}
 
       <form className="filters" onSubmit={applyFilters} key={formKey} aria-label="Client filters">
         <div className="field">
@@ -132,6 +145,7 @@ export default function ClientsPage() {
             placeholder="1f0c9d0a-3b2e-4c5f-8a91-6d7e8f9a0b1c"
             list="filter-site-id-options"
             autoComplete="off"
+            spellCheck="false"
           />
           <datalist id="filter-site-id-options">
             {siteOptions.map((site) => (
@@ -166,10 +180,11 @@ export default function ClientsPage() {
           <input
             id="filter-q"
             name="q"
-            type="text"
+            type="search"
             defaultValue={q}
             placeholder="hostname, MAC, or IP"
             autoComplete="off"
+            spellCheck="false"
           />
           <p className="field-hint">
             Checks hostname, MAC and IP of the rows already loaded for this page. The API has no
@@ -180,7 +195,7 @@ export default function ClientsPage() {
 
         <div className="field">
           <label htmlFor="filter-page-size">Rows per page</label>
-          <select id="filter-page-size" name="page_size" defaultValue={String(pageSize)}>
+          <select id="filter-page-size" name="page_size" defaultValue={pageSize}>
             {PAGE_SIZES.map((size) => (
               <option key={size} value={size}>
                 {size}
@@ -197,7 +212,7 @@ export default function ClientsPage() {
             type="button"
             className="button"
             onClick={() => setSearchParams(new URLSearchParams())}
-            disabled={!hasAnyFilter && pageSize === DEFAULT_PAGE_SIZE && page === 1}
+            disabled={!hasServerFilters && !hasLocalFilter && pageSize === DEFAULT_PAGE_SIZE}
           >
             Clear
           </button>
@@ -246,14 +261,40 @@ export default function ClientsPage() {
               </thead>
               <tbody>
                 {visibleRows.map((client) => (
-                  <tr key={client.id}>
-                    <th scope="row">{client.hostname ?? <Unknown />}</th>
-                    <td>{client.ip_address ?? <Unknown />}</td>
-                    <td>{client.mac ?? <Unknown />}</td>
-                    <td>{client.is_connected ? 'Connected' : 'Disconnected'}</td>
-                    <td>{client.ssid ?? <Unknown />}</td>
-                    <td>{client.uplink_device_id ?? <Unknown />}</td>
-                    <td>{client.last_seen}</td>
+                  <tr key={client.id} className="hover:bg-muted/40 transition-colors">
+                    <th scope="row" className="font-semibold text-foreground">
+                      {client.hostname ?? <UnknownHost client={client} />}
+                    </th>
+                    <td>
+                      {client.ip_address ? (
+                        <span className="font-mono text-xs">{client.ip_address}</span>
+                      ) : (
+                        UNKNOWN
+                      )}
+                    </td>
+                    <td>
+                      {client.mac ? (
+                        <span className="font-mono text-xs text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded">
+                          {client.mac}
+                        </span>
+                      ) : (
+                        UNKNOWN
+                      )}
+                    </td>
+                    <td>
+                      <StatusBadge status={client.is_connected ? 'Connected' : 'Disconnected'} />
+                    </td>
+                    <td>{client.ssid ?? UNKNOWN}</td>
+                    <td>
+                      {client.uplink_device_id ? (
+                        <span className="font-mono text-xs text-muted-foreground truncate max-w-[120px] block">
+                          {client.uplink_device_id}
+                        </span>
+                      ) : (
+                        UNKNOWN
+                      )}
+                    </td>
+                    <td className="text-xs text-muted-foreground">{client.last_seen}</td>
                   </tr>
                 ))}
               </tbody>
@@ -271,6 +312,7 @@ export default function ClientsPage() {
   )
 }
 
-function Unknown() {
-  return <span className="unknown">unknown</span>
+function UnknownHost({ client }: { client: Client }) {
+  if (client.mac) return <span className="unknown">client-{client.mac.slice(-5)}</span>
+  return UNKNOWN
 }

@@ -97,3 +97,38 @@ export async function apiGet<T>(
   if (!res.ok) throw await errorFromResponse(res)
   return (await res.json()) as T
 }
+
+/**
+ * POST a typed action / mutation. Throws an {@link ApiError} for any non-2xx response.
+ */
+export async function apiPost<T, B = unknown>(
+  path: string,
+  body?: B,
+  signal?: AbortSignal,
+): Promise<T> {
+  const url = buildUrl(path)
+
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal,
+    })
+  } catch (cause) {
+    if (signal?.aborted) throw cause
+    throw new ApiError({
+      status: 0,
+      code: 'network_error',
+      message: 'the request to our own API failed before a response arrived',
+      cause,
+    })
+  }
+
+  if (!res.ok) throw await errorFromResponse(res)
+  return (await res.json()) as T
+}

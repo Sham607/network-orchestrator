@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/config"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 )
@@ -27,10 +28,17 @@ type DB interface {
 type Inventory interface {
 	ListSites(ctx context.Context, q inventory.SiteQuery) (inventory.SitePage, error)
 	ListDevices(ctx context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error)
+	GetDevice(ctx context.Context, id string) (inventory.Device, bool, error)
 	ListClients(ctx context.Context, q inventory.ClientQuery) (inventory.ClientPage, error)
 	GetClient(ctx context.Context, id string) (inventory.Client, bool, error)
 	ListNetworks(ctx context.Context, q inventory.NetworkQuery) (inventory.NetworkPage, error)
 	GetNetwork(ctx context.Context, id string) (inventory.Network, bool, error)
+}
+
+// DeviceWriter defines the operational actions the router dispatches.
+type DeviceWriter interface {
+	RestartDevice(ctx context.Context, consoleID, mac string) error
+	TuneRadio(ctx context.Context, consoleID, apID, band string, channel, width int) error
 }
 
 // Dependencies are the collaborators a router needs.
@@ -43,6 +51,8 @@ type Dependencies struct {
 	Sync SyncStatusSource
 	// Inventory serves the list endpoints from the cache. It is required.
 	Inventory Inventory
+	Audit     audit.Recorder
+	Writer    DeviceWriter
 }
 
 // NewRouter builds the API router.
@@ -57,12 +67,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/sync/status", handleSyncStatus(deps))
 		r.Get("/sites", handleListSites(deps))
 		r.Get("/devices", handleListDevices(deps))
+		r.Get("/devices/{id}", handleGetDevice(deps))
 		r.Get("/clients", handleListClients(deps))
 		r.Get("/clients/{id}", handleGetClient(deps))
 		r.Get("/networks", handleListNetworks(deps))
 		r.Get("/networks/{id}", handleGetNetwork(deps))
 
-		r.Post("/devices/{id}/actions", handleWriteDisabled)
+		r.Post("/devices/{id}/actions", handleDeviceAction(deps))
 		r.Post("/clients/{id}/actions", handleWriteDisabled)
 	})
 

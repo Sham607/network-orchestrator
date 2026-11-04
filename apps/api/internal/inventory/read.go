@@ -79,6 +79,8 @@ type Site struct {
 type Device struct {
 	ID                string
 	SiteID            string
+	ConsoleID         string
+	UnifiDeviceID     string
 	Name              *string
 	MAC               *string
 	Model             *string
@@ -353,6 +355,34 @@ func (r *PostgresRepository) ListDevices(ctx context.Context, q DeviceQuery) (De
 		return DevicePage{}, fmt.Errorf("inventory: read devices: %w", err)
 	}
 	return page, nil
+}
+
+const getDeviceSQL = `
+SELECT d.id, d.site_id, COALESCE(s.console_id, ''), d.unifi_device_id, d.mac,
+       d.name, d.model, d.device_type, d.status, d.firmware_version,
+       d.firmware_updatable, host(d.ip_address), d.adopted_at, d.provisioned_at,
+       d.uplink_device_id, d.supported, d.uptime_sec, d.synced_at
+FROM devices d
+JOIN sites s ON d.site_id = s.id
+WHERE d.id = $1`
+
+// GetDevice returns one cached device by its local id. ok is false when no row
+// matches, which the transport renders as 404 (ADR-003 §5).
+func (r *PostgresRepository) GetDevice(ctx context.Context, id string) (Device, bool, error) {
+	var d Device
+	err := r.pool.QueryRow(ctx, getDeviceSQL, id).Scan(
+		&d.ID, &d.SiteID, &d.ConsoleID, &d.UnifiDeviceID, &d.MAC,
+		&d.Name, &d.Model, &d.DeviceType, &d.Status, &d.FirmwareVersion,
+		&d.FirmwareUpdatable, &d.IPAddress, &d.AdoptedAt, &d.ProvisionedAt,
+		&d.UplinkDeviceID, &d.Supported, &d.UptimeSec, &d.SyncedAt,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return Device{}, false, nil
+		}
+		return Device{}, false, fmt.Errorf("inventory: get device %s: %w", id, err)
+	}
+	return d, true, nil
 }
 
 // ListClients returns one page of the cached clients.

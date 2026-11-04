@@ -1,9 +1,11 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { apiGet } from './client'
+import { apiGet, apiPost } from './client'
 import type {
+  ActionAccepted,
   ClientList,
   ClientListQuery,
+  DeviceActionRequest,
   DeviceList,
   DeviceListQuery,
   NetworkList,
@@ -70,5 +72,16 @@ export function useSyncStatus() {
   return useQuery({
     queryKey: syncStatusQueryKey,
     queryFn: ({ signal }) => apiGet<SyncStatus>('/sync/status', undefined, signal),
+  })
+}
+
+export function useDeviceAction() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ deviceId, action }: { deviceId: string; action: DeviceActionRequest }) =>
+      apiPost<ActionAccepted, DeviceActionRequest>(`/devices/${deviceId}/actions`, action),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['devices'] })
+    },
   })
 }

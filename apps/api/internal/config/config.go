@@ -39,6 +39,7 @@ type Config struct {
 	// the selected mode to be present, or startup fails fast.
 	UnifiEnabled bool
 	UnifiMode    UnifiMode
+	WriteEnabled bool
 
 	// UNIFI_SM_API_KEY authenticates against the Site Manager cloud API (read).
 	UnifiSMAPIKey string
@@ -81,6 +82,7 @@ func (c Config) Redacted() map[string]any {
 		"log_level":                    c.LogLevel.String(),
 		"unifi_enabled":                c.UnifiEnabled,
 		"unifi_mode":                   string(c.UnifiMode),
+		"write_enabled":                c.WriteEnabled,
 		"sync_interval":                c.SyncInterval.String(),
 		"stale_after":                  c.SyncStaleAfter.String(),
 		"sync_site_allowlist":          c.SyncSiteAllowlist,
@@ -101,6 +103,7 @@ func Load() (Config, error) {
 		DatabaseURL:            os.Getenv("DATABASE_URL"),
 		UnifiEnabled:           getenvBool("UNIFI_ENABLED", false),
 		UnifiMode:              UnifiMode(getenv("UNIFI_MODE", string(UnifiModeCloud))),
+		WriteEnabled:           getenvBool("WRITE_ENABLED", false),
 		UnifiSMAPIKey:          os.Getenv("UNIFI_SM_API_KEY"),
 		UnifiLocalURL:          os.Getenv("UNIFI_LOCAL_URL"),
 		UnifiLocalAPIKey:       os.Getenv("UNIFI_LOCAL_API_KEY"),

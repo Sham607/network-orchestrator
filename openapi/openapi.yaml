@@ -1382,8 +1382,18 @@ components:
       properties:
         action:
           type: string
-          enum: [RESTART]
-          description: Action names must be verified against a staging console before enabling.
+          enum: [RESTART, TUNE_RADIO]
+          description: Action names accepted by the control plane.
+        band:
+          type: string
+          enum: ["5g", "2.4g"]
+          description: Target wireless radio band for TUNE_RADIO.
+        channel:
+          type: integer
+          description: Target channel number (e.g. 36, 44, 149, 157).
+        width:
+          type: integer
+          description: Target channel width in MHz (e.g. 40).
     ClientActionRequest:
       type: object
       required: [action]

@@ -38,6 +38,7 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 		"GET /api/v1/clients",
 		"GET /api/v1/clients/{id}",
 		"GET /api/v1/devices",
+		"GET /api/v1/devices/{id}",
 		"GET /api/v1/health",
 		"GET /api/v1/networks",
 		"GET /api/v1/networks/{id}",

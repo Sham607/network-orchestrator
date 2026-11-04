@@ -18,14 +18,17 @@ import (
 // the transport does with a page (validate, map, render), not how the cache is
 // queried — that is covered by the real-Postgres tests in package inventory.
 type fakeInventory struct {
-	sites      inventory.SitePage
-	siteErr    error
-	devices    inventory.DevicePage
-	deviceErr  error
-	clients    inventory.ClientPage
-	clientErr  error
-	networks   inventory.NetworkPage
-	networkErr error
+	sites          inventory.SitePage
+	siteErr        error
+	devices        inventory.DevicePage
+	deviceErr      error
+	clients        inventory.ClientPage
+	clientErr      error
+	networks       inventory.NetworkPage
+	networkErr     error
+	getDevice      inventory.Device
+	getDeviceFound bool
+	getDeviceErr   error
 
 	getClient      inventory.Client
 	getClientFound bool
@@ -41,6 +44,7 @@ type fakeInventory struct {
 	networkQueries  []inventory.NetworkQuery
 	getClientCalls  []string
 	getNetworkCalls []string
+	getDeviceCalls  []string
 }
 
 func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inventory.SitePage, error) {
@@ -51,6 +55,11 @@ func (f *fakeInventory) ListSites(_ context.Context, q inventory.SiteQuery) (inv
 func (f *fakeInventory) ListDevices(_ context.Context, q inventory.DeviceQuery) (inventory.DevicePage, error) {
 	f.deviceQueries = append(f.deviceQueries, q)
 	return f.devices, f.deviceErr
+}
+
+func (f *fakeInventory) GetDevice(_ context.Context, id string) (inventory.Device, bool, error) {
+	f.getDeviceCalls = append(f.getDeviceCalls, id)
+	return f.getDevice, f.getDeviceFound, f.getDeviceErr
 }
 
 func (f *fakeInventory) ListClients(_ context.Context, q inventory.ClientQuery) (inventory.ClientPage, error) {

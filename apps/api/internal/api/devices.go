@@ -2,10 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 )
 
@@ -144,4 +149,186 @@ func formatTimePtr(t *time.Time) *string {
 	}
 	formatted := formatTime(*t)
 	return &formatted
+}
+
+func deviceBodyOf(device inventory.Device) deviceBody {
+	return deviceBody{
+		ID:                device.ID,
+		SiteID:            device.SiteID,
+		Name:              device.Name,
+		MAC:               device.MAC,
+		Model:             device.Model,
+		DeviceType:        device.DeviceType,
+		Status:            device.Status,
+		FirmwareVersion:   device.FirmwareVersion,
+		FirmwareUpdatable: device.FirmwareUpdatable,
+		IPAddress:         device.IPAddress,
+		AdoptedAt:         formatTimePtr(device.AdoptedAt),
+		ProvisionedAt:     formatTimePtr(device.ProvisionedAt),
+		UplinkDeviceID:    device.UplinkDeviceID,
+		Supported:         device.Supported,
+		Radios:            []radioBody{},
+		UptimeSec:         device.UptimeSec,
+		SyncedAt:          formatTime(device.SyncedAt),
+	}
+}
+
+func handleGetDevice(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fields := fieldErrors{}
+		id := chi.URLParam(r, "id")
+		validateUUID(fields, "id", id)
+		if fields.invalid() {
+			writeValidationFailed(w, r, fields)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
+		defer cancel()
+
+		device, found, err := deps.Inventory.GetDevice(ctx, id)
+		if err != nil {
+			writeCacheUnavailable(w, r, deps, err)
+			return
+		}
+		if cacheStaleAndControllerOffline(deps) {
+			deps.Logger.Warn("get answered without a fresh cache", "module", "api", "event", "cache_stale_controller_offline", "endpoint", "devices")
+			writeError(w, r, CodeUnifiUnreachable, "UniFi controller is not reachable", map[string]any{
+				"reason":                  "cache_stale",
+				"last_successful_sync_at": formatTimePtr(deps.Sync.Status().LastSuccessfulSyncAt),
+			})
+			return
+		}
+		if !found {
+			writeError(w, r, CodeNotFound, "device not found", map[string]any{"resource": "device"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, deviceBodyOf(device))
+	}
+}
+
+type DeviceActionRequest struct {
+	Action  string `json:"action"`
+	Band    string `json:"band,omitempty"`
+	Channel int    `json:"channel,omitempty"`
+	Width   int    `json:"width,omitempty"`
+}
+
+func handleDeviceAction(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !deps.Config.WriteEnabled {
+			handleWriteDisabled(w, r)
+			return
+		}
+
+		fields := fieldErrors{}
+		id := chi.URLParam(r, "id")
+		validateUUID(fields, "id", id)
+		if fields.invalid() {
+			writeValidationFailed(w, r, fields)
+			return
+		}
+
+		var req DeviceActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, r, CodeValidationFailed, "cannot parse JSON body: "+err.Error(), nil)
+			return
+		}
+
+		action := strings.ToUpper(strings.TrimSpace(req.Action))
+		if action != "RESTART" && action != "TUNE_RADIO" {
+			writeError(w, r, CodeValidationFailed, fmt.Sprintf("unsupported action %q: must be RESTART or TUNE_RADIO", req.Action), nil)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		dev, ok, err := deps.Inventory.GetDevice(ctx, id)
+		if err != nil {
+			writeError(w, r, CodeInternalError, "cannot query device", map[string]any{"error": err.Error()})
+			return
+		}
+		if !ok {
+			writeError(w, r, CodeNotFound, fmt.Sprintf("device %s not found in cache", id), map[string]any{"resource": "device"})
+			return
+		}
+
+		// SAFETY GUARDRAIL: Only access points! Never gateways or switches.
+		if dev.DeviceType != "ap" {
+			writeError(w, r, CodeValidationFailed, "actions are restricted strictly to access points (type == 'ap')", map[string]any{
+				"reason":      "unsupported_device_type",
+				"device_type": dev.DeviceType,
+			})
+			return
+		}
+
+		now := time.Now().UTC()
+		var auditID int64
+		detail := map[string]any{
+			"device_id":       id,
+			"device_name":     dev.Name,
+			"model":           dev.Model,
+			"mac":             dev.MAC,
+			"console_id":      dev.ConsoleID,
+			"unifi_device_id": dev.UnifiDeviceID,
+		}
+
+		if action == "RESTART" {
+			if deps.Writer != nil && dev.ConsoleID != "" && dev.MAC != nil {
+				if err := deps.Writer.RestartDevice(ctx, dev.ConsoleID, *dev.MAC); err != nil {
+					writeError(w, r, CodeUnifiUnreachable, "failed to dispatch restart command to UniFi: "+err.Error(), nil)
+					return
+				}
+			}
+		} else if action == "TUNE_RADIO" {
+			if req.Channel <= 0 {
+				writeError(w, r, CodeValidationFailed, "valid channel integer is required for TUNE_RADIO", nil)
+				return
+			}
+			width := req.Width
+			if width <= 0 {
+				width = 40 // default HT40 per policy
+			}
+			band := req.Band
+			if band == "" {
+				band = "5g"
+			}
+			detail["target_band"] = band
+			detail["target_channel"] = req.Channel
+			detail["target_width"] = width
+
+			if deps.Writer != nil && dev.ConsoleID != "" && dev.UnifiDeviceID != "" {
+				if err := deps.Writer.TuneRadio(ctx, dev.ConsoleID, dev.UnifiDeviceID, band, req.Channel, width); err != nil {
+					writeError(w, r, CodeUnifiUnreachable, "failed to dispatch radio update to UniFi: "+err.Error(), nil)
+					return
+				}
+			}
+		}
+
+		if deps.Audit != nil {
+			idVal, createdAt, err := deps.Audit.RecordAction(ctx, audit.Entry{
+				ActorType:  "operator",
+				ActorLabel: "dashboard-operator",
+				Action:     "device." + strings.ToLower(action),
+				TargetType: "device",
+				TargetID:   id,
+				Detail:     detail,
+			})
+			if err == nil {
+				auditID = idVal
+				now = createdAt
+			}
+		}
+
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"audit_id":    auditID,
+			"action":      action,
+			"target_type": "device",
+			"target_id":   id,
+			"status":      "accepted",
+			"accepted_at": now.Format(time.RFC3339),
+		})
+	}
 }

@@ -615,10 +615,19 @@ export interface components {
         };
         DeviceActionRequest: {
             /**
-             * @description Action names must be verified against a staging console before enabling.
+             * @description Action names accepted by the control plane.
              * @enum {string}
              */
-            action: "RESTART";
+            action: "RESTART" | "TUNE_RADIO";
+            /**
+             * @description Target wireless radio band for TUNE_RADIO.
+             * @enum {string}
+             */
+            band?: "5g" | "2.4g";
+            /** @description Target channel number (e.g. 36, 44, 149, 157). */
+            channel?: number;
+            /** @description Target channel width in MHz (e.g. 40). */
+            width?: number;
         };
         ClientActionRequest: {
             /** @enum {string} */
