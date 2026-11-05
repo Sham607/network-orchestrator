@@ -48,6 +48,7 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 		"GET /api/v1/sites/{id}/rf-scan",
 		"GET /api/v1/sites/{id}/wan-health",
 		"GET /api/v1/sync/status",
+		"GET /api/v1/ws/telemetry",
 		"POST /api/v1/clients/{id}/actions",
 		"POST /api/v1/devices/{id}/actions",
 	}

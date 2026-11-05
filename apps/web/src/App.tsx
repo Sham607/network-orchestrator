@@ -12,9 +12,12 @@ import {
   AlertCircle,
   ExternalLink,
   GitFork,
+  AlertTriangle,
 } from 'lucide-react'
 
 import { useSyncStatus } from './api/queries'
+import { useTelemetryWebSocket } from './hooks/useTelemetryWebSocket'
+import { LiveTicker } from './components/LiveTicker'
 import ClientsPage from './pages/ClientsPage'
 import DevicesPage from './pages/DevicesPage'
 import NetworksPage from './pages/NetworksPage'
@@ -41,9 +44,10 @@ export default function App() {
   }, [darkMode])
 
   const syncStatus = useSyncStatus()
+  const { isConnected, payload, latencyHistory, lossHistory, activeAlert, clearAlert } =
+    useTelemetryWebSocket()
   const isHealthy = syncStatus.data && !syncStatus.data.stale && syncStatus.data.unifi?.reachable
   const location = useLocation()
-
   function getPageTitle(path: string) {
     if (path.startsWith('/devices')) return 'Devices & Hardware'
     if (path.startsWith('/sites')) return 'Sites & Locations'
@@ -229,10 +233,30 @@ export default function App() {
               {getPageTitle(location.pathname)}
             </h2>
           </div>
-          <div className="text-xs text-muted-foreground">
-            Cache read-only · UniFi Phase 1
-          </div>
+          <LiveTicker
+            isConnected={isConnected}
+            payload={payload}
+            latencyHistory={latencyHistory}
+            lossHistory={lossHistory}
+          />
         </header>
+
+        {/* Live Warning / Traffic Spike Alert Banner */}
+        {activeAlert && (
+          <div className="bg-rose-600 text-white px-8 py-2.5 text-xs font-semibold flex items-center justify-between shadow-md animate-in slide-in-from-top duration-200">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 animate-bounce shrink-0" />
+              <span>{activeAlert.message}</span>
+            </div>
+            <button
+              type="button"
+              onClick={clearAlert}
+              className="p-1 rounded hover:bg-rose-700 transition-colors text-xs font-bold"
+            >
+              ✕ Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Scrollable Content */}
         <main id="main" className="flex-1 p-8 overflow-y-auto">

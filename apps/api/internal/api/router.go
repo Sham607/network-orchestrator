@@ -61,9 +61,10 @@ type Dependencies struct {
 	// keeps /ready a database-only probe.
 	Sync SyncStatusSource
 	// Inventory serves the list endpoints from the cache. It is required.
-	Inventory Inventory
-	Audit     audit.Recorder
-	Writer    DeviceWriter
+	Inventory        Inventory
+	Audit            audit.Recorder
+	Writer           DeviceWriter
+	TelemetryHandler http.HandlerFunc
 }
 
 // NewRouter builds the API router.
@@ -86,6 +87,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		r.Get("/clients/{id}", handleGetClient(deps))
 		r.Get("/networks", handleListNetworks(deps))
 		r.Get("/networks/{id}", handleGetNetwork(deps))
+		if deps.TelemetryHandler != nil {
+			r.Get("/ws/telemetry", deps.TelemetryHandler)
+		} else {
+			r.Get("/ws/telemetry", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNotImplemented)
+			})
+		}
 
 		r.Post("/devices/{id}/actions", handleDeviceAction(deps))
 		r.Post("/clients/{id}/actions", handleWriteDisabled)

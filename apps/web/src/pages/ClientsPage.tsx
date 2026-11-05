@@ -5,6 +5,8 @@ import { Users, RefreshCw, Wifi, Cable } from 'lucide-react'
 import { useClients, useSites, useSyncStatus } from '../api/queries'
 import type { Client, ClientListQuery, SyncStatus } from '../api/types'
 import { ClientDrawer } from '../components/ClientDrawer'
+import { TopTalkersWidget } from '../components/TopTalkersWidget'
+import { useTelemetryWebSocket } from '../hooks/useTelemetryWebSocket'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
@@ -34,6 +36,7 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
 export default function ClientsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedClient, setSelectedClient] = useState<Client | null>(null)
+  const { isConnected: isWsConnected, payload: telemetryData } = useTelemetryWebSocket()
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
@@ -134,6 +137,12 @@ export default function ClientsPage() {
           />
         </div>
       )}
+
+      {/* Real-Time Bandwidth & Traffic Spike Monitor */}
+      <TopTalkersWidget
+        talkers={telemetryData?.top_talkers ?? []}
+        isConnected={isWsConnected}
+      />
 
       <form className="filters" onSubmit={applyFilters} key={formKey} aria-label="Client filters">
         <div className="field">
