@@ -601,6 +601,8 @@ func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
 			Name: "Network Test Site",
 			Desc: "default",
 		},
+		// ApplySite refuses a site that cannot be attributed to a console host.
+		ConsoleID: "host-net-test",
 		Networks: []unifi.Network{
 			{
 				ID:           "net-10",
@@ -610,7 +612,7 @@ func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
 				Enabled:      true,
 				IsDefault:    true,
 				Origin:       "SYSTEM_DEFINED",
-				Configurable: true,
+				Configurable: boolPtr(true),
 				Raw:          []byte(`{"test": 1}`),
 			},
 			{
@@ -621,7 +623,7 @@ func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
 				Enabled:      false,
 				IsDefault:    false,
 				Origin:       "",
-				Configurable: false,
+				Configurable: nil, // the console reported no metadata for this network
 				Raw:          []byte(`{"test": 2}`),
 			},
 		},
@@ -673,7 +675,7 @@ func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
 		r2.Enabled == nil || *r2.Enabled ||
 		r2.IsDefault == nil || *r2.IsDefault ||
 		r2.Origin != nil ||
-		r2.Configurable == nil || *r2.Configurable {
+		r2.Configurable != nil {
 		t.Fatalf("unexpected net-20 row: %+v", r2)
 	}
 
@@ -681,7 +683,7 @@ func TestPostgresPersistsNetworkCompleteness(t *testing.T) {
 	snap2 := snap
 	snap2.Networks[1].Management = "GATEWAY"
 	snap2.Networks[1].Origin = "USER_DEFINED"
-	snap2.Networks[1].Configurable = true
+	snap2.Networks[1].Configurable = boolPtr(true)
 	snap2.Networks[1].Enabled = true
 	snap2.SyncedAt = now.Add(time.Minute)
 

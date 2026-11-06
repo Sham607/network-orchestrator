@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 )
 
@@ -59,6 +60,54 @@ func (s *stack) networkByID(id string) (networkRow, bool) {
 	return row, true
 }
 
+// vlanOrder lists the networks that report a VLAN, in the order the API served
+// them. A network without one (WAN Link) has no documented position in the
+// contract, so it is left out of the ordering assertions instead of encoding
+// Postgres' null placement as if the contract had promised it.
+func vlanOrder(rows []networkRow) []string {
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if row.VLANID == nil {
+			continue
+		}
+		out = append(out, row.Name)
+	}
+	return out
+}
+
+// assertExplicitNulls fails unless every named field of the named network is
+// present in the JSON and set to null.
+func assertExplicitNulls(t *testing.T, s *stack, name string, fields ...string) {
+	t.Helper()
+	code, body, err := s.do(http.MethodGet, "/api/v1/networks?page_size=20", nil)
+	if err != nil || code != http.StatusOK {
+		t.Fatalf("GET /networks for null fields: code = %d, err = %v", code, err)
+	}
+	var page struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatalf("decode networks: %v", err)
+	}
+	for _, row := range page.Data {
+		if row["name"] != name {
+			continue
+		}
+		for _, field := range fields {
+			value, present := row[field]
+			if !present {
+				t.Errorf("%s: %s is missing from the payload, want explicit null", name, field)
+				continue
+			}
+			if value != nil {
+				t.Errorf("%s: %s = %v, want null", name, field, value)
+			}
+		}
+		return
+	}
+	t.Fatalf("no %q network in the payload", name)
+}
+
 func TestNetworksVerticalSlice(t *testing.T) {
 	s := startStack(t, stackOptions{unifiEnabled: true})
 	s.waitForSynced(e2eDeviceTotal)
@@ -73,13 +122,15 @@ func TestNetworksVerticalSlice(t *testing.T) {
 		t.Fatalf("got %d networks on page 1, want %d", len(list.Data), e2eNetworkTotal)
 	}
 
-	// Default sort in contract is vlan_id asc: Default (VLAN 1) should come before Guest (VLAN 20).
-	if list.Data[0].Name != "Default" || list.Data[1].Name != "Guest" {
-		t.Fatalf("order = [%s, %s], want [Default, Guest] (default sort is vlan_id asc)", list.Data[0].Name, list.Data[1].Name)
+	// Default sort in contract is vlan_id asc: Default (VLAN 1) comes before Guest (VLAN 20).
+	if got := vlanOrder(list.Data); !slices.Equal(got, []string{"Default", "Guest"}) {
+		t.Fatalf("order = %v, want [Default, Guest] (default sort is vlan_id asc)", got)
 	}
 
-	defNet := list.Data[0]
-	guestNet := list.Data[1]
+	// Read the two rows by name rather than by index: where a null VLAN sorts is
+	// not part of the contract.
+	defNet := s.networkByName("Default")
+	guestNet := s.networkByName("Guest")
 
 	// Verify all 4 completeness fields of FR-4 on Default network:
 	if defNet.VLANID == nil || *defNet.VLANID != 1 {
@@ -121,6 +172,25 @@ func TestNetworksVerticalSlice(t *testing.T) {
 		t.Errorf("Guest configurable = %v, want true", guestNet.Configurable)
 	}
 
+	// The network the console reported with no VLAN, no management and no
+	// metadata: every one of those fields has to reach the API as null. A zero
+	// value here would read as "VLAN 0", "not manageable", "not configurable".
+	bareNet := s.networkByName(e2eBareNetName)
+	if bareNet.ID == "" {
+		t.Fatalf("%s has no id", e2eBareNetName)
+	}
+	if bareNet.VLANID != nil || bareNet.Management != nil || bareNet.Origin != nil || bareNet.Configurable != nil {
+		t.Errorf("%s unreported fields = vlan_id:%v management:%v origin:%v configurable:%v, want all null",
+			e2eBareNetName, bareNet.VLANID, bareNet.Management, bareNet.Origin, bareNet.Configurable)
+	}
+	if bareNet.Enabled == nil || !*bareNet.Enabled || bareNet.IsDefault == nil || *bareNet.IsDefault {
+		t.Errorf("%s reported fields = enabled:%v is_default:%v, want true/false",
+			e2eBareNetName, bareNet.Enabled, bareNet.IsDefault)
+	}
+	// Nulls must be rendered explicitly, not dropped from the payload: the web
+	// client tells "unknown" from "false" by the key being there.
+	assertExplicitNulls(t, s, e2eBareNetName, "vlan_id", "management", "origin", "configurable")
+
 	// 2. Read single network by local UUID: GET /networks/{id}
 	singleDef, ok := s.networkByID(defNet.ID)
 	if !ok {
@@ -151,8 +221,8 @@ func TestNetworksVerticalSlice(t *testing.T) {
 
 	// site_id
 	s.getJSON(fmt.Sprintf("/api/v1/networks?site_id=%s", siteID), &filtered)
-	if filtered.Pagination.Total != 2 {
-		t.Errorf("site_id filter total = %d, want 2", filtered.Pagination.Total)
+	if filtered.Pagination.Total != e2eNetworkTotal {
+		t.Errorf("site_id filter total = %d, want %d", filtered.Pagination.Total, e2eNetworkTotal)
 	}
 
 	// vlan_id
@@ -178,11 +248,17 @@ func TestNetworksVerticalSlice(t *testing.T) {
 	if filtered.Pagination.Total != 1 || len(filtered.Data) != 1 || filtered.Data[0].Name != "Guest" {
 		t.Errorf("management=SWITCH filter = %+v, want only Guest", filtered.Data)
 	}
+	// A network the console reported without a management value must not be
+	// matched by any management filter.
+	s.getJSON("/api/v1/networks?management=UNMANAGED", &filtered)
+	if filtered.Pagination.Total != 0 || len(filtered.Data) != 0 {
+		t.Errorf("management=UNMANAGED filter = %+v, want empty", filtered.Data)
+	}
 
 	// enabled
 	s.getJSON("/api/v1/networks?enabled=true", &filtered)
-	if filtered.Pagination.Total != 1 || len(filtered.Data) != 1 || filtered.Data[0].Name != "Default" {
-		t.Errorf("enabled=true filter = %+v, want only Default", filtered.Data)
+	if filtered.Pagination.Total != 2 || len(filtered.Data) != 2 {
+		t.Errorf("enabled=true filter = %+v, want Default and %s", filtered.Data, e2eBareNetName)
 	}
 	s.getJSON("/api/v1/networks?enabled=false", &filtered)
 	if filtered.Pagination.Total != 1 || len(filtered.Data) != 1 || filtered.Data[0].Name != "Guest" {
@@ -191,14 +267,15 @@ func TestNetworksVerticalSlice(t *testing.T) {
 
 	// 4. Sorting & pagination
 	s.getJSON("/api/v1/networks?sort=vlan_id&order=desc", &filtered)
-	if len(filtered.Data) != 2 || filtered.Data[0].Name != "Guest" || filtered.Data[1].Name != "Default" {
-		t.Errorf("sort vlan_id desc = [%s, %s], want [Guest, Default]", filtered.Data[0].Name, filtered.Data[1].Name)
+	if got := vlanOrder(filtered.Data); !slices.Equal(got, []string{"Guest", "Default"}) {
+		t.Errorf("sort vlan_id desc = %v, want [Guest, Default]", got)
 	}
 
 	s.getJSON("/api/v1/networks?page=1&page_size=1", &filtered)
 	if filtered.Pagination.Page != 1 || filtered.Pagination.PageSize != 1 ||
-		filtered.Pagination.Total != 2 || filtered.Pagination.TotalPages != 2 || len(filtered.Data) != 1 {
-		t.Errorf("paged networks = %+v, want page 1 of 2 with 1 item", filtered.Pagination)
+		filtered.Pagination.Total != e2eNetworkTotal || filtered.Pagination.TotalPages != e2eNetworkTotal ||
+		len(filtered.Data) != 1 {
+		t.Errorf("paged networks = %+v, want page 1 of %d with 1 item", filtered.Pagination, e2eNetworkTotal)
 	}
 
 	// 5. Validation errors
