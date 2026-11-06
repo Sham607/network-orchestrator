@@ -1,29 +1,54 @@
 # Network Orchestrator
 
-Internal control plane for the office UniFi ecosystem: read network state,
-cache it in Postgres, and expose it to an operator dashboard. Single-tenant,
-runs on one Linux host in the office network.
+Internal control plane for the office UniFi ecosystem: poll network state into
+PostgreSQL, track client presence transitions and operational audit logs, and
+expose everything to an operator NOC dashboard. Single-tenant, runs on one
+Linux host in the office network.
 
-**Status: Enterprise Control Plane & Maintenance Actions Deployed.** In the
-repository and agreed: the stack (ADR-002), module boundaries and credential model
-(ADR-003), the UniFi access path (ADR-001), the phase-1 schema
-(`migrations/0001_init.sql`), and the API contract (`openapi/openapi.yaml`).
+**Status: Phase-1 Inventory Cache + Gated AP Maintenance & NOC Extensions.**
+Agreed and tracked in the repository: the UniFi access path (ADR-001), stack
+(ADR-002), module boundaries and credential model (ADR-003), readiness failure
+semantics and attribution (ADR-004, ADR-007), `client_events` retention
+(ADR-005), the phase-2 write gate policy (ADR-006), the initial database schema
+(`migrations/0001_init.sql`), and the core REST contract
+(`openapi/openapi.yaml`).
 
-Implemented in code: configuration loading and validation, structured logging,
-the error model, the dual-transport UniFi adapter (Site Manager Cloud and Cloud
-Connector Proxy), the inventory sync worker with its Postgres cache and append-only
-audit trail, probe endpoints (`health`, `ready`, `sync/status`), cache-backed read
-endpoints (`sites`, `devices`, `devices/{id}`, `clients`, `networks`), and interactive
-maintenance actions (`RESTART` and `TUNE_RADIO` for APs with safety guardrails).
-See [API surface](#api-surface) for details.
-Two consequences worth knowing before you point anything at this build:
+Implemented in code:
+- Configuration loading, validation, and secret redaction (`internal/config`),
+  structured JSON logging (`internal/observability`), and a single HTTP error
+  envelope (`internal/api`).
+- Dual-transport UniFi read adapter (`Site Manager Cloud` and `Console
+  Integration API v1` / Connector Proxy) plus a Connector Proxy operational
+  writer (`RestartDevice`, `TuneRadio`, `GetRogueAPs`) in `internal/unifi`.
+- Background inventory sync worker with circuit breaker, `sync_runs` history,
+  `client_events` connect/disconnect transition diffing, scheduled 30-day
+  `client_events` retention pruner (`internal/inventory`), and append-only
+  `audit_log` recorder (`internal/audit`).
+- Probe endpoints (`health`, `ready`, `sync/status`), cache-backed list and
+  detail endpoints (`sites`, `sites/{id}`, `devices`, `devices/{id}`,
+  `clients`, `clients/{id}`, `networks`, `networks/{id}`), site RF/WAN
+  diagnostic endpoints (`sites/{id}/rf-scan`, `sites/{id}/wan-health`), a
+  real-time WebSocket stream (`ws/telemetry` via `internal/telemetry`), and
+  opt-in AP maintenance actions (`POST /devices/{id}/actions` behind
+  `WRITE_ENABLED=true`).
 
-- **The cache read endpoints are unauthenticated** until operator auth lands.
-  Keep the API on the office LAN or VPN; do not expose it to the internet.
-- **A client list only has rows when the surface can read clients.** The cloud
-  surface serves no clients at all (ADR-001), so with the default
-  `UNIFI_MODE=cloud`, `GET /api/v1/clients` is a well-formed empty page. Real
-  client rows need `UNIFI_MODE=local` on the office LAN/VPN.
+Three consequences worth knowing before you point anything at this build:
+
+- **All endpoints are currently unauthenticated** until operator auth
+  (`internal/identity`) lands. That includes AP maintenance actions if you set
+  `WRITE_ENABLED=true`. Keep the API strictly on the office LAN or VPN; never
+  expose it to the internet.
+- **Clients and VLAN networks only populate in console mode.** The Site Manager
+  cloud surface (`UNIFI_MODE=cloud`, default) serves only `sites` and `devices`
+  (ADR-001), so `GET /api/v1/clients` and `GET /api/v1/networks` return valid
+  empty pages in `cloud` mode. Populate real client and network rows with
+  `UNIFI_MODE=local`.
+- **Live telemetry and WAN health endpoints currently serve synthetic baseline
+  metrics.** Inventory (`sites`, `devices`, `clients`, `networks`,
+  `client_events`) and RF rogue-AP scans (`sites/{id}/rf-scan`) read from cached
+  or controller data, whereas `ws/telemetry` and `sites/{id}/wan-health`
+  currently attach placeholder latency/loss/byte counters on top of cached
+  site/client records (`apps/api/cmd/api/main.go`, `internal/api/sites.go`).
 
 ---
 
@@ -31,10 +56,10 @@ Two consequences worth knowing before you point anything at this build:
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Go | 1.23+ | API |
-| Node.js | 20+ | Web SPA, OpenAPI lint |
-| Docker + Compose | recent | Dev stack |
-| `make` | any | Convenience targets |
+| Go | 1.23+ | API binary, migrations, E2E harness |
+| Node.js | 22+ | Web SPA & Vitest (`jsdom` 30 requires `^22.22.2 \|\| ^24.15.0 \|\| >=26.0.0`), OpenAPI lint |
+| Docker + Compose | recent | Local PostgreSQL 16 & dev stack |
+| `make` | any | Developer & CI-parity targets |
 
 ## Quick start
 
@@ -48,8 +73,8 @@ make bootstrap            # go mod download + npm ci
 # Start Postgres and apply the schema BEFORE the API. "make up" does not run
 # migrations, and the sync worker starts polling the moment the API is up: start
 # it against an empty database and the first cycle fails on every site
-# ("relation sites does not exist") and records a partial run, which only clears
-# on the next tick.
+# ("relation sites does not exist") and records a partial/failed run, which only
+# clears on the next tick.
 docker compose up -d db   # Postgres only (:5432)
 make migrate              # runs goose migrations against local Postgres
 
@@ -59,9 +84,9 @@ make up                   # API (:8080) + Postgres, now against a live schema
 curl -s localhost:8080/api/v1/health
 ```
 
-`make up` starts the API with UniFi disabled (`UNIFI_ENABLED=false`), which is
-the same configuration CI and the smoke test use. The service boots with no
-UniFi credentials present.
+`make up` starts the API with UniFi disabled (`UNIFI_ENABLED=false`) and writes
+disabled (`WRITE_ENABLED=false`), matching the baseline CI and smoke-test
+configuration. The service boots with no UniFi credentials present.
 
 `make down` stops the stack but **keeps the database volume**. To wipe the dev
 database and start over, use `docker compose down -v`.
@@ -72,10 +97,10 @@ database and start over, use `docker compose down -v`.
 make test           # Go unit tests
 make test-web       # Web component tests (Vitest)
 make build          # API binary + web bundle
-make e2e            # integration harness: real Postgres + a mocked UniFi, no secrets
+make e2e            # integration harness: real Postgres + mocked UniFi, no secrets
 make e2e-web        # the same stack, driven through the dashboard by Playwright
 make smoke          # build + start the API + assert liveness/readiness behaviour
-make web            # Vite dev server on :5173, proxies /api to :8080
+make web            # Vite dev server on :5173, proxies /api (incl. WS) to :8080
 make migrate        # apply pending database migrations
 make migrate-status # show database migration status
 make check          # fast inner-loop checks (lint, typecheck, both test suites,
@@ -84,14 +109,38 @@ make verify         # full local CI parity (all checks that run without a databa
                     # check + build + smoke)
 ```
 
-`make check` is a fast inner-loop check for active development. `make verify` provides
-full parity with CI jobs that run without an external database (`lint`, `typecheck`,
-`test`, `test-web`, `build`, `imports`, `secrets`, `openapi`, `openapi-types`, `smoke`).
-CI additionally runs `make e2e` and `make e2e-web` which require a disposable Postgres service.
+`make check` is a fast inner-loop check for active development. `make verify`
+provides full parity with CI jobs that run without an external database (`lint`,
+`typecheck`, `test`, `test-web`, `build`, `imports`, `secrets`, `openapi`,
+`openapi-types`, `smoke`). CI additionally runs `make e2e` and `make e2e-web`
+against a disposable Postgres 16 service.
 
 `make help` lists all targets.
 
-## Injecting UniFi credentials
+## Configuration & UniFi credentials
+
+`apps/api/internal/config` is the sole reader of environment variables:
+
+| Variable | Default | Validation / Purpose |
+|---|---|---|
+| `APP_ENV` | `development` | Runtime environment label |
+| `HTTP_ADDR` | `:8080` | HTTP listen address (also read by `/api --healthcheck`) |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+| `DATABASE_URL` | *(required)* | Must be a valid `postgres://` or `postgresql://` DSN with host |
+| `UNIFI_ENABLED` | `false` | Enables `inventory.Worker` background polling |
+| `UNIFI_MODE` | `cloud` | `cloud` (Site Manager API) or `local` (Console Integration API v1) |
+| `WRITE_ENABLED` | `false` | Gates `POST /api/v1/devices/{id}/actions` (`403 write_disabled` when `false`) |
+| `UNIFI_SM_API_KEY` | `""` | Required when `UNIFI_ENABLED=true` and `UNIFI_MODE=cloud`; also initializes `unifi.Writer` for AP actions and `rf-scan` |
+| `UNIFI_LOCAL_URL` | `""` | Required whenever `UNIFI_MODE=local` |
+| `UNIFI_LOCAL_API_KEY` | `""` | Required when `UNIFI_ENABLED=true` and `UNIFI_MODE=local` |
+| `UNIFI_CONSOLE_ID` | `""` | Optional; passed to the console adapter on the Connector Proxy path |
+| `UNIFI_CA_FILE` | `""` | Optional PEM path to pin a controller CA (TLS verification is never disabled) |
+| `SYNC_INTERVAL` | `60s` | Poll interval (positive Go duration) |
+| `SYNC_STALE_AFTER` | `180s` | Cache staleness threshold; **must be strictly greater than `SYNC_INTERVAL`** |
+| `SYNC_SITE_ALLOWLIST` | *(all sites)* | Optional comma-separated list of site IDs or site names to sync |
+| `CLIENT_EVENTS_RETENTION` | `720h` | Retention window (default 30 days) for `client_events` rows (ADR-005) |
+| `CLIENT_EVENTS_PRUNE_INTERVAL` | `1h` | Run interval for the `client_events` retention pruner |
+| `ADMIN_BOOTSTRAP_PASSWORD` | `""` | Loaded and redacted for future initial admin bootstrap (not wired yet) |
 
 The API key gives access to the production office network and is treated as a
 zero-trust secret: it never enters git, a Docker image, the database, logs, an
@@ -100,142 +149,160 @@ issue, or the browser (see `docs/adr/003-architecture.md` §4).
 **Local development**
 
 1. Edit your gitignored `.env` (created from `.env.example`).
-2. Set `UNIFI_ENABLED=true`, `UNIFI_MODE=cloud|local`, and the key fields.
-3. Restart the process. Startup **fails fast** if the mode is enabled and its
-   credentials are missing — with an error that names the variable but never
-   prints its value.
+2. Set `UNIFI_ENABLED=true`, `UNIFI_MODE=cloud|local`, and the matching key/URL
+   fields.
+3. Restart the process. Startup **fails fast** if a required variable is missing
+   or invalid — with an error that names the variable but never prints its
+   value.
 
 **On the office host**
 
-- Put the secret in `/etc/network-orchestrator/network-orchestrator.env` with
-  permissions `0600`, or a Docker secret.
-- Pass it to the container as a runtime environment variable. Never bake it into
-  an image, never pass it on a command line.
-- Rotate by updating the secret and restarting the container (or `SIGHUP`).
+- Put secrets in `/etc/network-orchestrator/network-orchestrator.env` with
+  permissions `0600`, or inject via Docker secrets.
+- Pass them to the container as runtime environment variables. Never bake them
+  into an image or pass them on a command line.
+- Rotate by updating the secret and restarting the container (`SIGHUP` is
+  trapped so the process does not exit, but live credential reload is not wired
+  yet).
 - Keep the file out of code backups.
 
 Verify credential wiring without leaking it: `make smoke` only calls the live
-Site Manager API when `UNIFI_SM_API_KEY` is set in your environment, and it is
+Site Manager API when `UNIFI_SM_API_KEY` is set in your environment, and its
+`live` build-tag test (`apps/api/internal/unifi/live_test.go`) is strictly
 read-only.
 
-> **The adapter is wired into the API through the sync worker.**
-> `apps/api/internal/unifi` exposes both read-only transports behind the
-> `unifi.Client` interface (Site Manager cloud and per-console Connector
-> Proxy); `apps/api/internal/inventory` polls it into Postgres, records every
-> cycle in `sync_runs` and writes an audit entry per cycle. With
-> `UNIFI_ENABLED=false` no worker runs and no request is made.
-> Note also that `UNIFI_MODE=local` requires `UNIFI_LOCAL_URL` and
-> `UNIFI_CONSOLE_ID`, so leaving the default `cloud` mode is easier for local
-> work.
+> **How the UniFi package is wired:** `apps/api/internal/unifi` exposes both
+> read transports behind `unifi.Client` (`cloud` and `console`) and operational
+> Connector Proxy calls behind `unifi.Writer` (`RestartDevice`, `TuneRadio`,
+> `GetRogueAPs`). `apps/api/internal/inventory` polls `unifi.Client` into
+> Postgres, records every cycle in `sync_runs`, and writes an `audit_log` entry
+> per cycle. With `UNIFI_ENABLED=false` no sync worker runs, though the local
+> `client_events` retention pruner and WebSocket telemetry engine still start.
 
 ## Repository layout
 
 ```
 apps/api          Go modular monolith (single binary)
-  cmd/api         entrypoint
+  cmd/api         entrypoint, --healthcheck probe, writer & telemetry wiring
   internal/
-    api           HTTP transport, error model, health endpoints
-    config        env/secret reading + validation (the only place that reads env)
-    observability structured logging, redaction
-    unifi         the ONLY package that talks to UniFi (read-only client:
-                  cloud + console transports, interface + domain types)
-    inventory     local cache + sync worker        (sites/devices/clients/networks,
-                  sync_runs, circuit breaker)
-    identity      operators, sessions, RBAC        (code pending)
-    audit         append-only action trail         (audit_log writer)
-apps/web          React + TypeScript + Vite SPA
-  e2e             Playwright dashboard suite (run by tests/e2e)
-docs/adr          architecture decision records
-openapi           the backend ↔ dashboard contract
-migrations        forward-only goose migrations
-scripts           import-boundary, secret scan, smoke test, e2e runners
-tests/e2e         integration harness (real Postgres + mocked UniFi)
+    api           HTTP transport (/api/v1), error model, probes, resource & action handlers
+    config        env/secret loading, validation, redaction (the ONLY package reading env)
+    observability structured JSON logging (slog), header redaction
+    unifi         the ONLY package that talks to UniFi (Client: cloud + console reads;
+                  Writer: AP restart, radio tuning & rogue AP scan via Connector Proxy)
+    inventory     Postgres cache repository, sync worker + circuit breaker,
+                  client_events transition tracking, scheduled retention pruner
+    telemetry     WebSocket fan-out hub & 2.5s loss / traffic-spike broadcast engine
+    identity      operators, sessions, RBAC (stub doc.go; code pending)
+    audit         append-only action trail (audit_log Postgres recorder)
+apps/web          React 18 + TypeScript + Vite NOC SPA
+  src             pages, drawers/modals, WebSocket hook, OpenAPI-typed client, Vitest tests
+  e2e             Playwright Chromium suite (orchestrated by tests/e2e)
+docs              data-model.md, architecture decision records (adr/), E2E docs (testing/)
+openapi           openapi.yaml contract + mock-expectations.md
+migrations        forward-only goose SQL migrations (0001_init.sql)
+scripts           import-boundary, secret scan, OpenAPI type-drift, smoke & E2E runners
+tests/e2e         full-stack integration harness (real Postgres + mocked UniFi + Playwright)
 ```
 
-Dependencies flow one way: `api → inventory → unifi`, plus `audit`. The rule is
-enforced by `scripts/check-imports.sh` in CI, not by convention.
+Module dependencies flow one way: `api → inventory → unifi` (plus `audit` and
+`telemetry`; `cmd/api/main.go` adapts `unifi.Writer` to `api.DeviceWriter` so
+`internal/api` never imports `internal/unifi`). This boundary is enforced in CI
+by `scripts/check-imports.sh`.
 
 ## API surface
 
-`openapi/openapi.yaml` is the phase-1 contract: probes, operator auth, and the
-cache-backed `sites` / `devices` / `clients` / `networks` list and detail
-endpoints, plus two **gated** write operations that are disabled until the UniFi
-write scope is approved. Resource handlers land incrementally; the contract and
-its mock expectations are complete today so the dashboard can be built in
-parallel (`openapi/mock-expectations.md`).
+`openapi/openapi.yaml` defines the phase-1 REST contract (`openapi/mock-expectations.md`
+documents mock invariants), while the router additionally serves three runtime
+NOC extensions (`rf-scan`, `wan-health`, `ws/telemetry`):
 
-| Endpoint | Purpose | State |
-|---|---|---|
-| `GET /api/v1/health` | Liveness. Always 200 while the process runs; never touches DB/UniFi. | **Served** |
-| `GET /api/v1/ready` | Readiness. 200 once the database answers and, with UniFi enabled, the cache is fresher than `SYNC_STALE_AFTER`; `503 service_unavailable` / `503 unifi_unreachable` otherwise. | **Served** |
-| `GET /api/v1/sync/status` | Cache freshness for operators, read from the live worker. | **Served** |
-| `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Operator session + role. | Contract only — returns 404 |
-| `GET /api/v1/sites` | Sites from the cache: paged (`page`, `page_size`), sorted (`sort`, `order`), name search (`q`). | **Served** |
-| `GET /api/v1/sites/{id}` | One site. | Contract only — returns 404 |
-| `GET /api/v1/devices` | APs, switches, gateways from the cache (filter by site/status/type/mac), paged and sorted. | **Served** |
-| `GET /api/v1/devices/{id}` | One device detail (model, MAC, IP, radios, firmware, uptime). | **Served** |
-| `GET /api/v1/clients` · `/clients/{id}` | Clients, connected or historical. | **Served** |
-| `GET /api/v1/networks` · `/networks/{id}` | VLAN/subnet config (not a WLAN). | **Served** |
-| `POST /api/v1/devices/{id}/actions` | Operational device actions (`RESTART`, `TUNE_RADIO`). Strictly AP-only, audited to `audit_log`. | **Served** (`WRITE_ENABLED=true`) |
-| `POST /api/v1/clients/{id}/actions` | Client block/unblock actions. | **Gated off**; `403 write_disabled` |
-Every registered route answers an error with one shape: `{ "code", "message",
-"details" }`, where `code` is stable and machine-readable. A route that is not
-registered yet — every row marked *contract only* — falls through to the
-router's plain `404 page not found`, which is deliberately **not** the contract
-shape: the dashboard uses exactly that difference to say "not served yet"
-instead of inventing an error it did not receive. See `openapi/openapi.yaml`.
+| Endpoint | In `openapi.yaml` | Purpose | State |
+|---|---|---|---|
+| `GET /api/v1/health` | Yes | Liveness. Always `200 OK` while the process runs; never touches DB/UniFi. | **Served** |
+| `GET /api/v1/ready` | Yes | Readiness. `200 OK` once Postgres answers and (when `UNIFI_ENABLED=true`) cache is fresher than `SYNC_STALE_AFTER`; `503` otherwise. | **Served** |
+| `GET /api/v1/sync/status` | Yes | Worker freshness, circuit breaker state, UniFi reachability/surface, and last run summary. | **Served** |
+| `POST /api/v1/auth/login` · `POST /api/v1/auth/logout` · `GET /api/v1/me` | Yes | Operator session + role. | **Contract only** — plain `404` |
+| `GET /api/v1/sites` | Yes | Sites from cache: paged (`page`, `page_size`), sorted (`name`, `synced_at`), searched (`q`). | **Served** |
+| `GET /api/v1/sites/{id}` | Yes | Single site detail from cache (also includes `console_id`). | **Served** |
+| `GET /api/v1/sites/{id}/rf-scan` | No | Queries neighboring rogue APs via `unifi.Writer` (when `UNIFI_SM_API_KEY` is set) and returns 2.4GHz/5GHz channel contention, cleanest Non-DFS channels, and top strong interferers. | **Served** |
+| `GET /api/v1/sites/{id}/wan-health` | No | Verifies site in cache and returns WAN health summary (currently synthetic baseline values). | **Served** *(synthetic)* |
+| `GET /api/v1/devices` · `GET /api/v1/devices/{id}` | Yes | APs, switches, gateways from cache (filter by `site_id`, `status`, `device_type`, `mac`; paged & sorted). Normalized `radios` is currently `[]` (raw payload stays internal in DB `raw`). | **Served** |
+| `GET /api/v1/clients` · `GET /api/v1/clients/{id}` | Yes | Connected or historical clients (`site_id`, `connected`, `uplink_device_id`, `client_type`, `mac`, inert `ssid`). `ssid` and `signal_dbm` are `null` in Integration API v1. | **Served** |
+| `GET /api/v1/networks` · `GET /api/v1/networks/{id}` | Yes | VLAN/subnet configuration (`site_id`, `vlan_id`, `management`, `enabled`; not WLAN/SSID). | **Served** |
+| `GET /api/v1/ws/telemetry` | No | WebSocket upgrade streaming 2.5s WAN latency/loss and top-talker ticks/alerts (currently backed by cached site/client rows + synthetic counters). | **Served** *(synthetic)* |
+| `POST /api/v1/devices/{id}/actions` | Yes (`proposed-gated`) | AP operational actions (`RESTART`, `TUNE_RADIO`). Rejects non-AP devices (`400 unsupported_device_type`), calls `unifi.Writer`, writes `audit_log`, returns `202 Accepted`. Returns `403` (`details.reason: write_disabled`) when `WRITE_ENABLED=false`. | **Served** (`WRITE_ENABLED=true`) |
+| `POST /api/v1/clients/{id}/actions` | Yes (`proposed-gated`) | Client block/unblock actions. | **Gated off** — `403` (`write_disabled`) |
 
-### Readiness failure semantics
+Every registered REST route answers an error with one JSON shape:
+`{ "code", "message", "details" }`, where `code` is stable and machine-readable
+and `details.request_id` echoes `X-Request-Id`. Routes marked *Contract only*
+are not registered yet and fall through to `chi`'s plain-text `404 page not
+found`, which the dashboard uses to distinguish "endpoint not implemented yet"
+from a structured resource `not_found`.
 
-`/ready` fails with **`503 service_unavailable`** and
-`details.reason: database_unreachable` when the database is unreachable (ADR-004).
-A readiness failure is deliberately **not** `internal_error` — that code is
-reserved for unexpected bugs in our own code, and conflating the two makes
-alerting unable to tell "Postgres is restarting" from "we shipped a bug".
-`scripts/smoke.sh` asserts exactly `503` + `service_unavailable`, so a
-regression to `500` now fails CI.
+### Readiness & cache-staleness semantics
 
-With `UNIFI_ENABLED=true`, readiness additionally requires a cache fresher than
-`SYNC_STALE_AFTER` (ADR-003 §6). A stale cache is attributed to the dependency
-that is actually broken (ADR-007). By default that is the controller — its
-silence is what stops the cache from refreshing — so it fails with **`503
-unifi_unreachable`** and `details.reason: cache_stale`. It becomes **`503
-service_unavailable`** with `details.reason: cache_not_fresh` only when there is
-positive evidence that our own side failed: the worker's last run failed with
-`error_kind: internal_error`, which never comes from the adapter. `details` then
-carries that `last_error_kind`, so "an unmigrated schema" is distinguishable
-from "the controller is down". A controller that merely looks reachable is not
-that evidence — `unifi.reachable` is refreshed once per cycle, so it lags. The
-database is checked first. With `UNIFI_ENABLED=false` there is no cache to be
-stale and the probe stays a database check.
+- `/ready` checks PostgreSQL first (`2s` timeout) and fails with **`503
+  service_unavailable`** (`details.reason: database_unreachable`) when the
+  database is down (ADR-004) — never `500 internal_error`, which is reserved
+  for unexpected bugs. `scripts/smoke.sh` asserts this behaviour in CI.
+- With `UNIFI_ENABLED=true`, `/ready` also requires a cache fresher than
+  `SYNC_STALE_AFTER` (ADR-003 §6). By default a stale cache is attributed to the
+  controller (**`503 unifi_unreachable`**, `details.reason: cache_stale`). It
+  shifts to **`503 service_unavailable`** (`details.reason: cache_not_fresh`,
+  carrying `last_error_kind`) only when there is positive evidence our own side
+  failed while the controller remained reachable (`status.Reachable &&
+  status.LastErrorKind == "internal_error"`, ADR-007). With
+  `UNIFI_ENABLED=false`, `/ready` stays a database-only probe.
+- Cache read handlers (`sites`, `devices`, `clients`, `networks`) query Postgres
+  first and, if `UNIFI_ENABLED=true` while the cache is stale **and** the
+  controller is marked unreachable, refuse to serve stale data with `503
+  unifi_unreachable` (`details.reason: cache_stale`). Otherwise they return
+  `200 OK` with per-row `synced_at`.
 
 ## Web dashboard
 
-`apps/web` is the operator SPA (React 18 + TypeScript + Vite + Tailwind CSS, ADR-002 §2).
-Views are implemented for sites (`/sites`), devices (`/devices`), clients (`/clients`),
-and networks (`/networks`), all built against `openapi/openapi.yaml`.
+`apps/web` is the operator NOC SPA (React 18 + TypeScript + Vite + Tailwind CSS
++ React Router + TanStack Query, ADR-002 §2). Five views are routed (`/`
+redirects to `/sites`): `/sites`, `/devices`, `/clients`, `/networks`, and
+`/topology`.
 
-- **Enterprise NOC Layout**: Left sidebar with live UniFi Cloud sync health indicator,
-  circuit breaker status, navigation with Lucide icons, and light / dark NOC mode toggle.
-- **Executive KPI Stat Cards**: Overview cards for total devices, online/offline ratio,
-  hardware type breakdown (APs vs Switches & Gateways), site counts, and timezones.
-- **Interactive Device Drawer**: Clicking any device row slides out a detailed inspection
-  sheet with specifications, hardware attributes, and a raw cached JSON inspector.
-- **On-Demand Maintenance Actions**:
-  - **Reboot Access Point**: Safely restart hung APs (e.g. zero-client radio freeze) directly
-    from the UI with double-confirmation dialog and audit trail logging.
-  - **Radio Channel Tuning**: Interactive migration to clean Non-DFS frequencies
-    (UNII-1 Ch 36/44, UNII-3 Ch 149/157) strictly enforcing **HT40** width.
-- **Executive Audit Report (A4 Printable)**: Instant light-theme audit report modal
-  with standard UniFi branding and native browser print / save-as-PDF capability.
-- **Types come from the contract**: `apps/web/src/api/schema.d.ts` is generated
-  by `openapi-typescript` and committed; `make check` ensures zero drift.
-- **The browser never touches UniFi**: Every request goes through the internal control
-  plane `/api/v1` (same-origin, proxied by Vite in dev); no UniFi credential or controller
-  URL is ever exposed to the client.
-Tests are component-level (Vitest + Testing Library) and cover the three states
-that matter: populated list, empty list, and API error (404 and 503). Run them
-with `make test-web`.
+- **Enterprise NOC Shell (`App.tsx`)**: Left sidebar with live sync health,
+  surface (`cloud` vs `console`), and circuit-breaker status (`GET
+  /api/v1/sync/status`), light/dark NOC theme toggle, header `LiveTicker`
+  sparklines (WAN RTT & packet loss over `/api/v1/ws/telemetry`), and a
+  dismissible alert banner on packet-loss or client traffic spikes.
+- **Sites & RF/WAN Diagnostics (`/sites`)**: Site inventory with per-site modals
+  for **RF Spectrum Analyzer (`RFHeatmapModal`)** (2.4GHz/5GHz channel
+  contention bars, cleanest Non-DFS recommendations, strongest rogue AP
+  interferers) and **WAN Health Monitor (`WANHealthModal`)**.
+- **Devices & AP Maintenance (`/devices`)**: Executive KPI stat cards,
+  URL-synced server-side filters (`site_id`, `status`, pagination), interactive
+  **`DeviceDrawer`** (specifications, raw payload viewer, AP **Reboot**, and
+  **Radio Channel Tuning** on 5GHz HT40 Non-DFS Ch `36/44/149/157/161` or 2.4GHz
+  HT20 Ch `1/6/11`), **`BatchOptimizerModal`** (sequential 5GHz HT40 AP channel
+  optimization with a 15-second inter-AP safety countdown), and
+  **`AuditReportModal`** (printable A4 light-theme report via browser print /
+  save-as-PDF).
+- **Clients (`/clients`)**: Real-time **`TopTalkersWidget`**, server-side
+  filters (`site_id`, `connected`, `client_type`) + local page search (`q`),
+  surface-aware empty-state guidance for `UNIFI_MODE=cloud`, and
+  **`ClientDrawer`**.
+- **Networks (`/networks`)**: VLAN/subnet table with validated `vlan_id`
+  (`0..4094`), `management`, and `enabled` filters plus local page search (`q`).
+- **Topology (`/topology`)**: Per-site visual `Gateway → Switch → Access Point`
+  hierarchy with click-to-inspect `DeviceDrawer` integration.
+- **Contract-driven types & network isolation**: Core types in
+  `apps/web/src/api/schema.d.ts` are generated by `openapi-typescript` and
+  checked for drift by `make openapi-types` (extended by `RFScanResponse` and
+  `WANHealthResponse` in `src/api/types.ts`). Every browser request stays
+  same-origin under `/api/v1`; Playwright E2E tests assert the browser never
+  contacts external hosts.
+
+Component tests (`apps/web/src/test`, Vitest + Testing Library) cover API client
+error parsing and populated, empty, filtered, paged, and error (`404`/`503`)
+states across `SitesPage`, `DevicesPage`, `ClientsPage`, and `NetworksPage`. Run
+them with `make test-web`.
 
 ## CI
 
@@ -243,48 +310,57 @@ with `make test-web`.
 
 | Job | Checks |
 |---|---|
-| `api` | `gofmt`, `go vet`, `go build`, `go test`, import boundaries |
-| `web` | `npm ci`, eslint, `tsc`, Vitest, Vite build, generated-type drift against `openapi/openapi.yaml` |
+| `api` | `gofmt`, `go vet` (incl. `-tags e2e`), `go build`, `go test`, import boundaries (`scripts/check-imports.sh`) |
+| `web` | Node 22: `npm ci`, ESLint, `tsc`, Vitest, Vite build, generated-type drift (`npm run openapi:check`) |
 | `openapi` | Redocly lint of `openapi/openapi.yaml` |
-| `secrets` | `scripts/check-secrets.sh` — high-confidence secrets and TLS bypasses |
-| `smoke` | build the API, start it, assert liveness + clean readiness degradation |
-| `e2e` | full integration harness: real Postgres, mocked UniFi, contract-checked bodies |
-| `e2e-web` | Playwright drives the dashboard in Chromium against the same mocked stack |
+| `secrets` | `scripts/check-secrets.sh` — high-confidence secrets, tracked `.env`, and TLS bypasses |
+| `smoke` | Build the API, start it without Postgres, assert `/health` `200` (`X-Request-Id`) + `/ready` `503 service_unavailable` |
+| `e2e` | Full Go integration harness against Postgres 16 + mocked UniFi, JSON-Schema contract-checked |
+| `e2e-web` | Playwright drives the dashboard in Chromium against the same Go harness + Vite dev server |
 
 No CI job needs a UniFi key. Real-network verification stays a deliberate,
-manual, read-only step.
+manual, read-only step (`UNIFI_SM_API_KEY=... make smoke`).
 
 ### End-to-end harness
 
-`tests/e2e` (`//go:build e2e`) starts the real API binary against a disposable
-Postgres schema and an in-process mock of the UniFi surface, then asserts the
-whole vertical slice: sync → cache → `/sites` → `/devices`, plus readiness
-degradation and the read-only boundary. It carries no credentials and can never
-reach a live controller — the harness starts its own fixture server and strips
-inherited `UNIFI_*` variables from the API process it launches, which is why
-neither `e2e` job needs a secret.
+`tests/e2e` (`//go:build e2e`) compiles and starts the real API binary against a
+disposable Postgres schema and an in-process mock of the UniFi Console
+Integration API (`mockUnifi`), stripping any inherited `UNIFI_*` environment
+variables so it can never reach a live controller. It verifies:
+- Vertical inventory slices: `sync → cache → /sites, /devices, /clients, /networks`
+  (every `200 OK` response validated against `openapi/openapi.yaml`).
+- Client presence transitions (`connected` → `disconnected` → `connected`) in
+  `clients` and `client_events`, plus scheduled `client_events` retention
+  pruning (`prune_test.go`).
+- Readiness and read-path degradation under dead database, dead controller, and
+  live controller outage crossing `SYNC_STALE_AFTER` (`degradation_test.go`).
+- Default write-gate enforcement (`403 write_disabled` on `POST .../actions` and
+  rejection of mutating verbs on read routes in `readonly_test.go`).
+- Browser E2E (`web_test.go` with `E2E_WEB=1` / `make e2e-web`): boots the Vite
+  dev server proxied to the live Go harness and runs the Playwright suites in
+  `apps/web/e2e` (`dashboard.spec.ts`, `clients.spec.ts`, `networks.spec.ts`).
 
-The dashboard is driven over the same stack: the harness starts the Vite dev
-server with its `/api` proxy pointed at the API and runs the Playwright suite in
-`apps/web/e2e`, so there is one set of fixtures and no second database
-bootstrap. `make e2e` and `make e2e-web` run both locally against the compose
-database; see `docs/testing/e2e-harness.md` for the full test matrix and the
-red→green evidence.
+See `docs/testing/e2e-harness.md` for harness details.
 
 ## Security rules
 
 - Real secrets live only in the runtime environment of the host. `.env` is
-  gitignored; only `.env.example` (no values) is tracked.
-- Never disable TLS verification. Pin the controller CA via `UNIFI_CA_FILE`
-  instead of reaching for `curl -k` or `InsecureSkipVerify`.
-- Logs are structured and never receive raw headers or payloads; `config.Config`
-  has a `Redacted()` view for diagnostics.
-- UniFi write operations are out of scope for phase 1 and, when added, need an
-  explicit `admin` role, CSRF token, rate limit, and an audit entry.
-- The cache read endpoints (`sites`, `devices`, `clients`) carry **no
-  authentication** until operator auth is implemented: nothing checks a session
-  or a role. Treat any deployment as LAN/VPN-only and never publish it. This is
-  a known phase-1 gap, not a configuration mistake.
+  gitignored; only `.env.example` (blank secret placeholders) is tracked, and
+  `scripts/check-secrets.sh` blocks tracked `.env` files or leaked keys.
+- Never disable TLS verification (`InsecureSkipVerify` and `curl -k` fail CI).
+  Pin a self-signed controller CA via `UNIFI_CA_FILE`.
+- Logs are structured JSON and never emit raw headers or payloads;
+  `config.Config.Redacted()` scrubs secrets and DSN passwords for diagnostics.
+- Write actions default off (`WRITE_ENABLED=false`). Enabling
+  `WRITE_ENABLED=true` activates `POST /api/v1/devices/{id}/actions` (`RESTART`
+  and `TUNE_RADIO`), which enforces an AP-only hardware guardrail
+  (`device_type == "ap"`) and writes an `audit_log` entry; `POST
+  /api/v1/clients/{id}/actions` remains locked (`403 write_disabled`). See
+  ADR-006 for the full production write-gate policy.
+- Operator authentication, session cookies, RBAC, and CSRF (`internal/identity`)
+  are **not implemented yet**: every `/api/v1` endpoint is unauthenticated on
+  the wire. Treat any deployment as strictly office LAN/VPN-only and never
+  publish it externally.
 
 ## Branch protection
 
@@ -298,8 +374,13 @@ Until then a direct push to `main` is possible and would bypass CI entirely.
 
 ## Decisions
 
-Read `docs/adr/` before proposing structural changes. ADR-001 fixes the UniFi
-access path and auth (Connector Proxy, read-only in phase 1), ADR-002 fixes the
-stack, ADR-003 fixes the module boundaries, credential handling and failure
-modes, ADR-004 fixes the readiness failure code. A change to any of them
-requires a new ADR — they are immutable once accepted.
+Read `docs/adr/` before proposing structural changes. Accepted ADRs are
+immutable — superseding a decision requires a new ADR:
+
+- **ADR-001** (`001-unifi-api-surface.md`): UniFi API surfaces, `X-API-KEY` auth, and Cloud Connector Proxy verification.
+- **ADR-002** (`002-tech-stack.md`): Tech stack (Go 1.23 + `chi` + `pgx`, Postgres 16, React 18 + Vite + Tailwind SPA).
+- **ADR-003** (`003-architecture.md`): Modular-monolith boundaries, sync/cache model, credential handling, error shape, and failure modes.
+- **ADR-004** (`004-readiness-failure-code.md`): Readiness failure uses `503 service_unavailable`, never `500 internal_error` (stale-cache clause refined by ADR-007).
+- **ADR-005** (`005-client-events-retention.md`): 30-day `client_events` retention window and scheduled application-side pruning.
+- **ADR-006** (`006-write-activation-gate.md`): Phase-2 write-operation activation prerequisites and explicit `403 write_disabled` gate.
+- **ADR-007** (`007-readiness-attribution.md`): Readiness blames a stale cache on `unifi_unreachable` unless positive `internal_error` evidence proves our own side failed.
