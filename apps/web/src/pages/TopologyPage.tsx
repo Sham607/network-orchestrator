@@ -11,12 +11,13 @@ import {
 
 import { useDevices, useSites, useSiteWANHealth } from '../api/queries'
 import type { Device } from '../api/types'
+import { delay } from '../lib/utils'
 import { DeviceDrawer } from '../components/DeviceDrawer'
 
 export default function TopologyPage() {
   const [selectedSiteId, setSelectedSiteId] = useState<string>('')
   const [inspectDevice, setInspectDevice] = useState<Device | null>(null)
-
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const sites = useSites()
   const siteList = sites.data?.data ?? []
 
@@ -25,9 +26,22 @@ export default function TopologyPage() {
   const activeSite = siteList.find((s) => s.id === activeSiteId)
   const wanHealth = useSiteWANHealth(activeSiteId || null)
   const ispDisplay = wanHealth.data?.isp_name || wanHealth.data?.primary_wan || 'PT Telkom Indonesia'
-
-  const devicesQuery = useDevices({ page: 1, page_size: 100, site_id: activeSiteId || undefined })
+  const devicesQuery = useDevices({ page: 1, page_size: 200, site_id: activeSiteId || undefined })
   const devices = devicesQuery.data?.data ?? []
+
+  async function handleRefresh() {
+    setIsRefreshing(true)
+    const start = Date.now()
+    try {
+      await Promise.all([devicesQuery.refetch(), wanHealth.refetch()])
+    } finally {
+      const elapsed = Date.now() - start
+      if (elapsed < 500) {
+        await delay(500 - elapsed)
+      }
+      setIsRefreshing(false)
+    }
+  }
 
   const gateways = devices.filter((d) => d.device_type === 'gateway')
   const switches = devices.filter((d) => d.device_type === 'switch')
@@ -65,11 +79,11 @@ export default function TopologyPage() {
           <button
             type="button"
             className="button inline-flex items-center gap-1.5 py-1.5"
-            onClick={() => void devicesQuery.refetch()}
-            disabled={devicesQuery.isFetching}
+            onClick={handleRefresh}
+            disabled={isRefreshing || devicesQuery.isFetching}
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${devicesQuery.isFetching ? 'animate-spin' : ''}`} />
-            <span>Refresh</span>
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing || devicesQuery.isFetching ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing || devicesQuery.isFetching ? 'Refreshing…' : 'Refresh'}</span>
           </button>
         </div>
       </div>

@@ -190,9 +190,14 @@ func (e *Engine) tick(ctx context.Context) {
 	}
 	e.prevMu.Unlock()
 
-	// Sort Talkers by Download Throughput descending
+	// Sort Talkers by Max Throughput (Download or Upload) descending, prioritizing active spikes
 	sort.Slice(talkers, func(i, j int) bool {
-		return talkers[i].DownloadMbps > talkers[j].DownloadMbps
+		if talkers[i].IsSpike != talkers[j].IsSpike {
+			return talkers[i].IsSpike
+		}
+		maxI := math.Max(talkers[i].DownloadMbps, talkers[i].UploadMbps)
+		maxJ := math.Max(talkers[j].DownloadMbps, talkers[j].UploadMbps)
+		return maxI > maxJ
 	})
 	if len(talkers) > 5 {
 		talkers = talkers[:5]

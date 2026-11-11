@@ -151,6 +151,7 @@ func startStack(t *testing.T, opts stackOptions) *stack {
 		settings["UNIFI_MODE"] = "local"
 		settings["UNIFI_LOCAL_URL"] = unifiURL
 		settings["UNIFI_LOCAL_API_KEY"] = e2eUnifiKey
+		settings["UNIFI_SM_API_KEY"] = e2eUnifiKey
 		settings["UNIFI_CONSOLE_ID"] = "console-e2e"
 	}
 	// Overrides go into the map, not next to it: the process reads the first

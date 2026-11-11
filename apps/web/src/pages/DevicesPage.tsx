@@ -11,6 +11,7 @@ import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
 import { StatCard } from '../components/StatCard'
 import { StatusBadge } from '../components/StatusBadge'
+import { delay } from '../lib/utils'
 import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
@@ -22,6 +23,7 @@ export default function DevicesPage() {
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null)
   const [isReportOpen, setIsReportOpen] = useState(false)
   const [isBatchOpen, setIsBatchOpen] = useState(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
@@ -58,6 +60,19 @@ export default function DevicesPage() {
     setSearchParams(next)
   }
 
+  async function handleRefresh() {
+    setIsRefreshing(true)
+    const start = Date.now()
+    try {
+      await devices.refetch()
+    } finally {
+      const elapsed = Date.now() - start
+      if (elapsed < 500) {
+        await delay(500 - elapsed)
+      }
+      setIsRefreshing(false)
+    }
+  }
   const hasFilters = siteId !== '' || status !== ''
   const formKey = `${siteId}|${status}|${pageSize}`
 
@@ -103,15 +118,15 @@ export default function DevicesPage() {
           <button
             type="button"
             className="button inline-flex items-center gap-2"
-            onClick={() => void devices.refetch()}
-            disabled={devices.isFetching}
+            onClick={handleRefresh}
+            disabled={isRefreshing || devices.isFetching}
+            title="Refresh cache"
           >
-            <RefreshCw className={`h-4 w-4 ${devices.isFetching ? 'animate-spin' : ''}`} />
-            <span>{devices.isFetching ? 'Refreshing…' : 'Refresh'}</span>
+            <RefreshCw className={`h-4 w-4 ${isRefreshing || devices.isFetching ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing || devices.isFetching ? 'Refreshing…' : 'Refresh'}</span>
           </button>
         </div>
       </div>
-
       {/* KPI Metric Cards */}
       {devices.data && devices.data.data.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

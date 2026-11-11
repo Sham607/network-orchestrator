@@ -187,7 +187,9 @@ AND ($4::text IS NULL OR d.mac = $4::text)`
 	clientsFilter = `
     ($1::uuid IS NULL OR c.site_id = $1::uuid)
 AND ($2::boolean IS NULL OR c.is_connected = $2::boolean)
-AND ($3::text IS NULL OR c.uplink_device_id = $3::text)
+AND ($3::text IS NULL OR c.uplink_device_id = $3::text OR EXISTS (
+    SELECT 1 FROM devices d WHERE d.id::text = $3::text AND (d.unifi_device_id = c.uplink_device_id OR d.mac = c.uplink_device_id)
+))
 AND ($4::text IS NULL OR c.client_type = $4::text)
 AND ($5::text IS NULL OR c.mac = $5::text)
 AND ($6::text IS NULL OR c.ssid = $6::text)`

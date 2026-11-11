@@ -12,6 +12,7 @@ import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
 import { StatCard } from '../components/StatCard'
 import { StatusBadge } from '../components/StatusBadge'
+import { delay } from '../lib/utils'
 import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
@@ -36,6 +37,7 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
 export default function ClientsPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [selectedClient, setSelectedClient] = useState<Client | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const { isConnected: isWsConnected, payload: telemetryData } = useTelemetryWebSocket()
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
@@ -81,6 +83,19 @@ export default function ClientsPage() {
     setSearchParams(next)
   }
 
+  async function handleRefresh() {
+    setIsRefreshing(true)
+    const start = Date.now()
+    try {
+      await Promise.all([clients.refetch(), sync.refetch()])
+    } finally {
+      const elapsed = Date.now() - start
+      if (elapsed < 500) {
+        await delay(500 - elapsed)
+      }
+      setIsRefreshing(false)
+    }
+  }
   const hasServerFilters = siteId !== '' || connected !== '' || clientType !== ''
   const hasLocalFilter = q !== ''
   const formKey = `${siteId}|${connected}|${clientType}|${pageSize}`
@@ -103,17 +118,23 @@ export default function ClientsPage() {
             and paginated by the API; search below only narrows rows already on this page.
           </p>
         </div>
-        <button
-          type="button"
-          className="button inline-flex items-center gap-2"
-          onClick={() => void clients.refetch()}
-          disabled={clients.isFetching}
-        >
-          <RefreshCw className={`h-4 w-4 ${clients.isFetching ? 'animate-spin' : ''}`} />
-          <span>{clients.isFetching ? 'Refreshing…' : 'Refresh'}</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="button inline-flex items-center gap-2"
+            onClick={handleRefresh}
+            disabled={isRefreshing || clients.isFetching}
+            title={
+              sync.data?.last_successful_sync_at
+                ? `Last UniFi sync: ${new Date(sync.data.last_successful_sync_at).toLocaleTimeString()}`
+                : 'Refresh cache'
+            }
+          >
+            <RefreshCw className={`h-4 w-4 ${isRefreshing || clients.isFetching ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing || clients.isFetching ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
+        </div>
       </div>
-
       {clients.data && rows.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <StatCard

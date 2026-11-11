@@ -289,7 +289,11 @@ func handleDeviceAction(deps Dependencies) http.HandlerFunc {
 		}
 
 		if action == "RESTART" {
-			if deps.Writer != nil && dev.ConsoleID != "" && dev.MAC != nil {
+			if deps.Writer != nil {
+				if dev.ConsoleID == "" || dev.MAC == nil {
+					writeError(w, r, CodeValidationFailed, "device missing console_id or mac for restart", nil)
+					return
+				}
 				if err := deps.Writer.RestartDevice(ctx, dev.ConsoleID, *dev.MAC); err != nil {
 					writeError(w, r, CodeUnifiUnreachable, "failed to dispatch restart command to UniFi: "+err.Error(), nil)
 					return
@@ -312,7 +316,11 @@ func handleDeviceAction(deps Dependencies) http.HandlerFunc {
 			detail["target_channel"] = req.Channel
 			detail["target_width"] = width
 
-			if deps.Writer != nil && dev.ConsoleID != "" && dev.UnifiDeviceID != "" {
+			if deps.Writer != nil {
+				if dev.ConsoleID == "" || dev.UnifiDeviceID == "" {
+					writeError(w, r, CodeValidationFailed, "device missing console_id or unifi_device_id for radio tuning", nil)
+					return
+				}
 				if err := deps.Writer.TuneRadio(ctx, dev.ConsoleID, dev.UnifiDeviceID, band, req.Channel, width); err != nil {
 					writeError(w, r, CodeUnifiUnreachable, "failed to dispatch radio update to UniFi: "+err.Error(), nil)
 					return

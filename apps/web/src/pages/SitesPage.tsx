@@ -3,6 +3,7 @@ import { Globe, RefreshCw, Clock, Network, Radio, Activity } from 'lucide-react'
 
 import { useSites } from '../api/queries'
 import type { Site } from '../api/types'
+import { delay } from '../lib/utils'
 import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { StatCard } from '../components/StatCard'
@@ -15,7 +16,21 @@ export default function SitesPage() {
   const { data, error, isPending, isFetching, refetch } = useSites()
   const [rfSite, setRfSite] = useState<Site | null>(null)
   const [wanSite, setWanSite] = useState<Site | null>(null)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
+  async function handleRefresh() {
+    setIsRefreshing(true)
+    const start = Date.now()
+    try {
+      await refetch()
+    } finally {
+      const elapsed = Date.now() - start
+      if (elapsed < 500) {
+        await delay(500 - elapsed)
+      }
+      setIsRefreshing(false)
+    }
+  }
   const totalSites = data?.pagination.total ?? 0
   const items = data?.data ?? []
   const withGateway = items.filter((s) => Boolean(s.gateway_mac)).length
@@ -32,15 +47,18 @@ export default function SitesPage() {
             Source: <code>GET /api/v1/sites</code>
           </p>
         </div>
-        <button
-          type="button"
-          className="button inline-flex items-center gap-2"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-        >
-          <RefreshCw className={`h-4 w-4 ${isFetching ? 'animate-spin' : ''}`} />
-          <span>{isFetching ? 'Refreshing…' : 'Refresh'}</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="button inline-flex items-center gap-2"
+            onClick={handleRefresh}
+            disabled={isRefreshing || isFetching}
+            title="Refresh cache"
+          >
+            <RefreshCw className={`h-4 w-4 ${isRefreshing || isFetching ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing || isFetching ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
+        </div>
       </div>
 
       {data && data.data.length > 0 && (

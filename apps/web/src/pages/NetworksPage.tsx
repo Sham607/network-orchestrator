@@ -1,4 +1,4 @@
-import { type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Network as NetworkIcon, RefreshCw, Shield, Layers } from 'lucide-react'
 
@@ -8,6 +8,7 @@ import { ErrorNotice } from '../components/ErrorNotice'
 import { EmptyNotice, LoadingNotice } from '../components/Notices'
 import { Pagination } from '../components/Pagination'
 import { StatCard } from '../components/StatCard'
+import { delay } from '../lib/utils'
 import { pageSizeFrom, positiveInt } from './listParams'
 
 const PAGE_SIZES = [25, 50, 100, 200] as const
@@ -41,7 +42,7 @@ function emptyCacheHint(status: SyncStatus | undefined): string {
 
 export default function NetworksPage() {
   const [searchParams, setSearchParams] = useSearchParams()
-
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const page = positiveInt(searchParams.get('page'), 1)
   const pageSize = pageSizeFrom(searchParams.get('page_size'), PAGE_SIZES, DEFAULT_PAGE_SIZE)
   const siteId = (searchParams.get('site_id') ?? '').trim()
@@ -92,6 +93,20 @@ export default function NetworksPage() {
     setSearchParams(next)
   }
 
+  async function handleRefresh() {
+    setIsRefreshing(true)
+    const start = Date.now()
+    try {
+      await Promise.all([networks.refetch(), sync.refetch()])
+    } finally {
+      const elapsed = Date.now() - start
+      if (elapsed < 500) {
+        await delay(500 - elapsed)
+      }
+      setIsRefreshing(false)
+    }
+  }
+
   const hasServerFilters = siteId !== '' || vlanId !== '' || management !== '' || enabled !== ''
   const hasLocalFilter = q !== ''
   const formKey = `${siteId}|${vlanId}|${management}|${enabled}|${pageSize}`
@@ -114,15 +129,22 @@ export default function NetworksPage() {
             page.
           </p>
         </div>
-        <button
-          type="button"
-          className="button inline-flex items-center gap-2"
-          onClick={() => void networks.refetch()}
-          disabled={networks.isFetching}
-        >
-          <RefreshCw className={`h-4 w-4 ${networks.isFetching ? 'animate-spin' : ''}`} />
-          <span>{networks.isFetching ? 'Refreshing…' : 'Refresh'}</span>
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            className="button inline-flex items-center gap-2"
+            onClick={handleRefresh}
+            disabled={isRefreshing || networks.isFetching}
+            title={
+              sync.data?.last_successful_sync_at
+                ? `Last UniFi sync: ${new Date(sync.data.last_successful_sync_at).toLocaleTimeString()}`
+                : 'Refresh cache'
+            }
+          >
+            <RefreshCw className={`h-4 w-4 ${isRefreshing || networks.isFetching ? 'animate-spin' : ''}`} />
+            <span>{isRefreshing || networks.isFetching ? 'Refreshing…' : 'Refresh'}</span>
+          </button>
+        </div>
       </div>
 
       {networks.data && rows.length > 0 && (

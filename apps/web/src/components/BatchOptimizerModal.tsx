@@ -20,29 +20,51 @@ export function BatchOptimizerModal({ devices, isOpen, onClose }: BatchOptimizer
 
   const actionMutation = useDeviceAction()
   const timerRef = useRef<number | null>(null)
+  const isCancelledRef = useRef<boolean>(false)
   const channelPool = [36, 44, 149, 157, 161] as const
 
   useEffect(() => {
-    return () => clearInterval(timerRef.current!)
-  }, [])
+    if (!isOpen) {
+      isCancelledRef.current = true
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+      setIsRunning(false)
+      setCountdown(0)
+    } else {
+      isCancelledRef.current = false
+    }
+    return () => {
+      isCancelledRef.current = true
+      if (timerRef.current !== null) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  }, [isOpen])
+
   if (!isOpen) return null
 
   async function startOptimization() {
+    isCancelledRef.current = false
     setIsRunning(true)
     setIsCompleted(false)
     setLogs([`[${new Date().toLocaleTimeString()}] Starting sequential optimization across ${aps.length} Access Points...`])
     setCurrentIndex(0)
     await runStep(0)
   }
-
   async function runStep(index: number) {
+    if (isCancelledRef.current) {
+      setIsRunning(false)
+      return
+    }
     if (index >= aps.length) {
       setIsRunning(false)
       setIsCompleted(true)
       setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ✅ Optimization completed for all ${aps.length} APs.`])
       return
     }
-
     const ap = aps[index]
     const targetChannel = channelPool[index % channelPool.length]
 
@@ -70,12 +92,20 @@ export function BatchOptimizerModal({ devices, isOpen, onClose }: BatchOptimizer
       let remaining = 15
       setCountdown(remaining)
       timerRef.current = setInterval(() => {
+        if (isCancelledRef.current) {
+          clearInterval(timerRef.current!)
+          timerRef.current = null
+          return
+        }
         remaining -= 1
         setCountdown(remaining)
         if (remaining <= 0) {
           clearInterval(timerRef.current!)
-          setCurrentIndex(index + 1)
-          void runStep(index + 1)
+          timerRef.current = null
+          if (!isCancelledRef.current) {
+            setCurrentIndex(index + 1)
+            void runStep(index + 1)
+          }
         }
       }, 1000)
     } catch (err: unknown) {
@@ -186,14 +216,33 @@ export function BatchOptimizerModal({ devices, isOpen, onClose }: BatchOptimizer
               )
             )}
             {isRunning && (
-              <button
-                type="button"
-                disabled
-                className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-lg bg-muted text-muted-foreground cursor-not-allowed"
-              >
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>Optimizing ({countdown}s)...</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled
+                  className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold rounded-lg bg-muted text-muted-foreground cursor-not-allowed"
+                >
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  <span>Optimizing ({countdown}s)...</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    isCancelledRef.current = true
+                    if (timerRef.current !== null) {
+                      clearInterval(timerRef.current)
+                      timerRef.current = null
+                    }
+                    setIsRunning(false)
+                    setCountdown(0)
+                    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ⏹️ Optimization stopped by operator.`])
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-rose-600 text-white hover:bg-rose-700 transition-colors shadow-sm"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  <span>Stop</span>
+                </button>
+              </>
             )}
             {isCompleted && (
               <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400 py-2">
