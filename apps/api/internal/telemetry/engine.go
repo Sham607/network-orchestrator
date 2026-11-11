@@ -42,7 +42,7 @@ type Engine struct {
 	interval   time.Duration
 	prevBytes  map[string]ClientBytes
 	prevMu     sync.Mutex
-	spikeLimit float64 // Mbps threshold for traffic spike alert (default 50.0)
+	spikeLimit float64 // Mbps threshold for traffic spike alert (default 15.0)
 	logger     *slog.Logger
 }
 
@@ -59,7 +59,7 @@ func NewEngine(hub *Hub, provider SiteDataProvider, interval time.Duration, logg
 		provider:   provider,
 		interval:   interval,
 		prevBytes:  make(map[string]ClientBytes),
-		spikeLimit: 50.0,
+		spikeLimit: 15.0,
 		logger:     logger,
 	}
 }
@@ -119,15 +119,22 @@ func (e *Engine) tick(ctx context.Context) {
 	for _, c := range clientSnapshots {
 		prev, exists := e.prevBytes[c.MAC]
 		var rxSpeed, txSpeed float64
+		var isSpike bool
 
 		if exists && now.Sub(prev.Timestamp) > 0 {
 			dtSeconds := now.Sub(prev.Timestamp).Seconds()
+			if prev.RxBytes == 0 && c.RxBytes > 10_000_000 {
+				prev.RxBytes = c.RxBytes
+			}
+			if prev.TxBytes == 0 && c.TxBytes > 10_000_000 {
+				prev.TxBytes = c.TxBytes
+			}
 			deltaRx := c.RxBytes - prev.RxBytes
 			deltaTx := c.TxBytes - prev.TxBytes
-			if deltaRx > 0 {
+			if deltaRx > 0 && dtSeconds > 0 {
 				rxSpeed = (float64(deltaRx) * 8.0) / (dtSeconds * 1_000_000.0)
 			}
-			if deltaTx > 0 {
+			if deltaTx > 0 && dtSeconds > 0 {
 				txSpeed = (float64(deltaTx) * 8.0) / (dtSeconds * 1_000_000.0)
 			}
 			if rxSpeed <= 0 && c.RxRate > 0 {
@@ -142,6 +149,12 @@ func (e *Engine) tick(ctx context.Context) {
 			if txSpeed <= 0 && prev.TxSpeed > 0.5 {
 				txSpeed = math.Round(prev.TxSpeed*0.88*10) / 10
 			}
+			rxSpeed = math.Round(rxSpeed*10) / 10
+			txSpeed = math.Round(txSpeed*10) / 10
+			if rxSpeed >= e.spikeLimit || txSpeed >= e.spikeLimit {
+				isSpike = true
+				hasSpike = true
+			}
 		} else {
 			if c.RxRate > 0 {
 				rxSpeed = float64(c.RxRate) / 100_000.0
@@ -153,13 +166,8 @@ func (e *Engine) tick(ctx context.Context) {
 			} else {
 				txSpeed = float64(rand.IntN(35)+2) / 10.0
 			}
-		}
-
-		rxSpeed = math.Round(rxSpeed*10) / 10
-		txSpeed = math.Round(txSpeed*10) / 10
-		isSpike := rxSpeed >= e.spikeLimit || txSpeed >= e.spikeLimit
-		if isSpike {
-			hasSpike = true
+			rxSpeed = math.Round(rxSpeed*10) / 10
+			txSpeed = math.Round(txSpeed*10) / 10
 		}
 
 		talkers = append(talkers, ClientSpikeMetric{

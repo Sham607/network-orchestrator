@@ -7,7 +7,7 @@ interface TopTalkersWidgetProps {
 }
 
 export function TopTalkersWidget({ talkers, isConnected }: TopTalkersWidgetProps) {
-  const maxSpeed = Math.max(...talkers.map((t) => t.download_mbps), 50)
+  const maxSpeed = Math.max(...talkers.map((t) => t.download_mbps), 15)
 
   return (
     <div className="rounded-xl border border-border bg-card p-5 shadow-sm space-y-4">
@@ -36,7 +36,7 @@ export function TopTalkersWidget({ talkers, isConnected }: TopTalkersWidgetProps
         <div className="space-y-3">
           {talkers.map((client) => {
             const pct = Math.min(Math.round((client.download_mbps / maxSpeed) * 100), 100)
-            const isCriticalSpike = client.is_spike || client.download_mbps >= 50
+            const isCriticalSpike = client.is_spike || client.download_mbps >= 15 || client.upload_mbps >= 15
 
             return (
               <div
@@ -82,7 +82,7 @@ export function TopTalkersWidget({ talkers, isConnected }: TopTalkersWidgetProps
                     className={`h-full rounded-full transition-all duration-300 ${
                       isCriticalSpike
                         ? 'bg-rose-500'
-                        : client.download_mbps > 20
+                        : client.download_mbps >= 10
                         ? 'bg-amber-500'
                         : 'bg-primary'
                     }`}

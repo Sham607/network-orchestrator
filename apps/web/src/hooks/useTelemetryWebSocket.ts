@@ -85,11 +85,15 @@ export function useTelemetryWebSocket() {
             } else if (msg.type === 'traffic_spike_alert' || msg.data.has_spike) {
               const topHog = msg.data.top_talkers.find((t) => t.is_spike)
               if (topHog) {
+                const speed = Math.max(topHog.download_mbps, topHog.upload_mbps)
+                const dir = topHog.download_mbps >= topHog.upload_mbps ? 'Download' : 'Upload'
                 setActiveAlert({
-                  message: `Traffic Spike: ${topHog.hostname || topHog.mac} consuming ${topHog.download_mbps} Mbps on ${topHog.ap_name}!`,
+                  message: `Traffic Spike: ${topHog.hostname || topHog.mac} consuming ${speed} Mbps (${dir}) on ${topHog.ap_name}!`,
                   type: 'spike',
                 })
               }
+            } else {
+              setActiveAlert((prev) => (prev?.type === 'spike' ? null : prev))
             }
           }
         } catch {
