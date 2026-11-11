@@ -69,6 +69,11 @@ type Config struct {
 	ClientEventsRetention     time.Duration
 	ClientEventsPruneInterval time.Duration
 
+	// AuthEnabled gates operator session enforcement on API routes.
+	AuthEnabled bool
+	// AdminBootstrapEmail is the initial admin account email seeded when
+	// AdminBootstrapPassword is set.
+	AdminBootstrapEmail string
 	// AdminBootstrapPassword, when set, is used once to seed the first admin
 	// on an empty database. It is a secret and must never be committed.
 	AdminBootstrapPassword string
@@ -91,6 +96,8 @@ func (c Config) Redacted() map[string]any {
 		"database_url":                 redactURL(c.DatabaseURL),
 		"sm_api_key":                   redactSecret(c.UnifiSMAPIKey),
 		"local_api_key":                redactSecret(c.UnifiLocalAPIKey),
+		"auth_enabled":                 c.AuthEnabled,
+		"admin_email":                  c.AdminBootstrapEmail,
 		"admin_password":               redactSecret(c.AdminBootstrapPassword),
 	}
 }
@@ -109,6 +116,8 @@ func Load() (Config, error) {
 		UnifiLocalAPIKey:       os.Getenv("UNIFI_LOCAL_API_KEY"),
 		UnifiConsoleID:         os.Getenv("UNIFI_CONSOLE_ID"),
 		UnifiCAFile:            os.Getenv("UNIFI_CA_FILE"),
+		AuthEnabled:            getenvBool("AUTH_ENABLED", false),
+		AdminBootstrapEmail:    getenv("ADMIN_BOOTSTRAP_EMAIL", "admin@kantor.local"),
 		AdminBootstrapPassword: os.Getenv("ADMIN_BOOTSTRAP_PASSWORD"),
 	}
 

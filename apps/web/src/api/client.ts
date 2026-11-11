@@ -98,6 +98,15 @@ export async function apiGet<T>(
   return (await res.json()) as T
 }
 
+function readCookie(name: string): string | undefined {
+  if (typeof document === 'undefined' || !document.cookie) return undefined
+  for (const part of document.cookie.split(';')) {
+    const [k, ...rest] = part.trim().split('=')
+    if (k === name) return decodeURIComponent(rest.join('='))
+  }
+  return undefined
+}
+
 /**
  * POST a typed action / mutation. Throws an {@link ApiError} for any non-2xx response.
  */
@@ -107,15 +116,20 @@ export async function apiPost<T, B = unknown>(
   signal?: AbortSignal,
 ): Promise<T> {
   const url = buildUrl(path)
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  }
+  const csrf = readCookie('csrf_token')
+  if (csrf) {
+    headers['X-CSRF-Token'] = csrf
+  }
 
   let res: Response
   try {
     res = await fetch(url, {
       method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal,
     })
@@ -130,5 +144,6 @@ export async function apiPost<T, B = unknown>(
   }
 
   if (!res.ok) throw await errorFromResponse(res)
+  if (res.status === 204) return undefined as T
   return (await res.json()) as T
 }

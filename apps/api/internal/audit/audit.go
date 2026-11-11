@@ -13,15 +13,23 @@ import (
 // by the application (ADR-003 §5); retention pruning is deliberately out of
 // scope for now.
 type Entry struct {
-	// ActorType is 'system' for unattended writers, 'operator' for humans.
+	// ActorUserID is the operator's UUID when the action comes from a logged-in session.
+	ActorUserID *string
+	// ActorType is 'system' for unattended writers, 'user' or 'operator' for humans.
 	ActorType string
-	// ActorLabel names the writer without joining to identity (e.g. "sync-worker").
+	// ActorLabel names the writer without joining to identity (e.g. "sync-worker" or operator email).
 	ActorLabel string
-	// Action is the stable verb, e.g. "sync.cycle".
+	// Action is the stable verb, e.g. "sync.cycle" or "device.restart".
 	Action string
 	// TargetType/TargetID point at the affected row, when there is one.
 	TargetType string
 	TargetID   string
+	// SiteID is the optional site UUID scope.
+	SiteID *string
+	// RequestID correlates the audit row with HTTP/log request_id.
+	RequestID string
+	// IP is the optional client IP address.
+	IP string
 	// Detail carries the structured payload; nil is stored as an empty object.
 	Detail map[string]any
 }
@@ -44,8 +52,8 @@ func NewPostgresRecorder(pool *pgxpool.Pool) *PostgresRecorder {
 }
 
 const insertEntryWithReturn = `
-INSERT INTO audit_log (actor_type, actor_label, action, target_type, target_id, detail)
-VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)
+INSERT INTO audit_log (actor_user_id, actor_type, actor_label, action, target_type, target_id, site_id, request_id, ip, detail)
+VALUES (NULLIF($1, '')::uuid, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, '')::uuid, NULLIF($8, ''), NULLIF($9, '')::inet, $10)
 RETURNING id, created_at`
 
 // RecordAction appends e to the trail and returns the new audit id and timestamp.
@@ -62,10 +70,18 @@ func (r *PostgresRecorder) RecordAction(ctx context.Context, e Entry) (int64, ti
 	if actorType == "" {
 		actorType = "system"
 	}
+	var actorUserID, siteID string
+	if e.ActorUserID != nil {
+		actorUserID = *e.ActorUserID
+	}
+	if e.SiteID != nil {
+		siteID = *e.SiteID
+	}
 	var id int64
 	var createdAt time.Time
 	if err := r.pool.QueryRow(ctx, insertEntryWithReturn,
-		actorType, e.ActorLabel, e.Action, e.TargetType, e.TargetID, payload,
+		actorUserID, actorType, e.ActorLabel, e.Action, e.TargetType, e.TargetID,
+		siteID, e.RequestID, e.IP, payload,
 	).Scan(&id, &createdAt); err != nil {
 		return 0, time.Time{}, fmt.Errorf("audit: insert entry: %w", err)
 	}

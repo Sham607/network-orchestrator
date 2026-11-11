@@ -14,14 +14,15 @@ import {
 } from 'lucide-react'
 import type { Device } from '../api/types'
 import { useDeviceAction } from '../api/queries'
+import { useAuth } from './AuthGate'
 import { StatusBadge } from './StatusBadge'
-
 interface DeviceDrawerProps {
   device: Device | null
   onClose: () => void
 }
 
 export function DeviceDrawer({ device, onClose }: DeviceDrawerProps) {
+  const { canOperate } = useAuth()
   const [copied, setCopied] = useState(false)
   const [activeTab, setActiveTab] = useState<'details' | 'tune' | 'json'>('details')
   const [confirmRestart, setConfirmRestart] = useState(false)
@@ -34,7 +35,6 @@ export function DeviceDrawer({ device, onClose }: DeviceDrawerProps) {
   const [targetWidth, setTargetWidth] = useState<number>(40)
 
   const actionMutation = useDeviceAction()
-
   if (!device) return null
 
   function copyJson() {
@@ -215,6 +215,21 @@ export function DeviceDrawer({ device, onClose }: DeviceDrawerProps) {
                     <span className="text-muted-foreground">Last Cache Sync</span>
                     <span className="text-muted-foreground">{device.synced_at}</span>
                   </div>
+                  {device.radios && device.radios.length > 0 && (
+                    <div className="pt-2 border-t border-border space-y-1.5">
+                      <span className="text-xs text-muted-foreground block">Normalized Radios</span>
+                      <div className="flex flex-wrap gap-1.5">
+                        {device.radios.map((r, idx) => (
+                          <span
+                            key={idx}
+                            className="inline-flex items-center gap-1 rounded bg-primary/10 px-2 py-0.5 text-[11px] font-mono text-primary"
+                          >
+                            {r.frequency_ghz ?? '?'}GHz · Ch {r.channel ?? '?'} ({r.channel_width_mhz ?? '?'}MHz)
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Maintenance Actions Section */}
@@ -228,7 +243,11 @@ export function DeviceDrawer({ device, onClose }: DeviceDrawerProps) {
                       Safely reboot hung APs (e.g. zero-client radio freeze) without disturbing network routing.
                     </p>
 
-                    {!confirmRestart ? (
+                    {!canOperate ? (
+                      <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground text-center">
+                        🔒 Maintenance actions require <strong>operator</strong> or <strong>admin</strong> role.
+                      </div>
+                    ) : !confirmRestart ? (
                       <button
                         type="button"
                         onClick={() => setConfirmRestart(true)}
@@ -333,14 +352,20 @@ export function DeviceDrawer({ device, onClose }: DeviceDrawerProps) {
                     />
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={handleTuneRadio}
-                    disabled={actionMutation.isPending}
-                    className="w-full mt-4 py-2 px-4 text-xs font-semibold rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
-                  >
-                    {actionMutation.isPending ? 'Migrating Channel…' : `Apply Channel ${targetChannel} (${targetWidth}MHz)`}
-                  </button>
+                  {!canOperate ? (
+                    <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground text-center">
+                      🔒 Radio tuning requires <strong>operator</strong> or <strong>admin</strong> role.
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleTuneRadio}
+                      disabled={actionMutation.isPending}
+                      className="w-full mt-4 py-2 px-4 text-xs font-semibold rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
+                    >
+                      {actionMutation.isPending ? 'Migrating Channel…' : `Apply Channel ${targetChannel} (${targetWidth}MHz)`}
+                    </button>
+                  )}
                 </div>
               </div>
             )}

@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
+	"github.com/Sham607/network-orchestrator/apps/api/internal/identity"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 )
 
@@ -117,25 +118,7 @@ func handleListDevices(deps Dependencies) http.HandlerFunc {
 			Pagination: newPaginationBody(query.Page, query.PageSize, page.Total),
 		}
 		for _, device := range page.Items {
-			body.Data = append(body.Data, deviceBody{
-				ID:                device.ID,
-				SiteID:            device.SiteID,
-				Name:              device.Name,
-				MAC:               device.MAC,
-				Model:             device.Model,
-				DeviceType:        device.DeviceType,
-				Status:            device.Status,
-				FirmwareVersion:   device.FirmwareVersion,
-				FirmwareUpdatable: device.FirmwareUpdatable,
-				IPAddress:         device.IPAddress,
-				AdoptedAt:         formatTimePtr(device.AdoptedAt),
-				ProvisionedAt:     formatTimePtr(device.ProvisionedAt),
-				UplinkDeviceID:    device.UplinkDeviceID,
-				Supported:         device.Supported,
-				Radios:            []radioBody{},
-				UptimeSec:         device.UptimeSec,
-				SyncedAt:          formatTime(device.SyncedAt),
-			})
+			body.Data = append(body.Data, deviceBodyOf(device))
 		}
 		writeJSON(w, http.StatusOK, body)
 	}
@@ -149,6 +132,19 @@ func formatTimePtr(t *time.Time) *string {
 	}
 	formatted := formatTime(*t)
 	return &formatted
+}
+
+func radioBodiesOf(radios []inventory.Radio) []radioBody {
+	out := make([]radioBody, 0, len(radios))
+	for _, r := range radios {
+		out = append(out, radioBody{
+			WlanStandard:    r.WlanStandard,
+			FrequencyGHz:    r.FrequencyGHz,
+			ChannelWidthMHz: r.ChannelWidthMHz,
+			Channel:         r.Channel,
+		})
+	}
+	return out
 }
 
 func deviceBodyOf(device inventory.Device) deviceBody {
@@ -167,7 +163,7 @@ func deviceBodyOf(device inventory.Device) deviceBody {
 		ProvisionedAt:     formatTimePtr(device.ProvisionedAt),
 		UplinkDeviceID:    device.UplinkDeviceID,
 		Supported:         device.Supported,
-		Radios:            []radioBody{},
+		Radios:            radioBodiesOf(device.Radios),
 		UptimeSec:         device.UptimeSec,
 		SyncedAt:          formatTime(device.SyncedAt),
 	}
@@ -222,6 +218,23 @@ func handleDeviceAction(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
+		sess, hasSession := identity.SessionFromContext(r.Context())
+		if hasSession {
+			if !sess.User.Role.CanOperate() {
+				writeError(w, r, CodeForbidden, "operator or admin role required", map[string]any{
+					"reason":        "insufficient_role",
+					"required_role": "operator",
+					"current_role":  string(sess.User.Role),
+				})
+				return
+			}
+			if sess.CSRFToken != "" && !identity.VerifyCSRF(sess.CSRFToken, r.Header.Get(csrfHeaderName)) {
+				writeError(w, r, CodeForbidden, "invalid or missing CSRF token", map[string]any{
+					"reason": "csrf_invalid",
+				})
+				return
+			}
+		}
 		fields := fieldErrors{}
 		id := chi.URLParam(r, "id")
 		validateUUID(fields, "id", id)
@@ -305,16 +318,37 @@ func handleDeviceAction(deps Dependencies) http.HandlerFunc {
 					return
 				}
 			}
+			if updater, ok := deps.Inventory.(interface {
+				UpdateDeviceRadio(ctx context.Context, deviceID, band string, channel, width int) error
+			}); ok {
+				_ = updater.UpdateDeviceRadio(ctx, id, band, req.Channel, width)
+			}
 		}
 
 		if deps.Audit != nil {
+			actorType := "operator"
+			actorLabel := "dashboard-operator"
+			var actorUserID *string
+			if hasSession {
+				actorType = "user"
+				actorLabel = sess.User.Email
+				uid := sess.User.ID
+				actorUserID = &uid
+				detail["operator_email"] = sess.User.Email
+				detail["operator_role"] = string(sess.User.Role)
+			}
+			siteID := dev.SiteID
 			idVal, createdAt, err := deps.Audit.RecordAction(ctx, audit.Entry{
-				ActorType:  "operator",
-				ActorLabel: "dashboard-operator",
-				Action:     "device." + strings.ToLower(action),
-				TargetType: "device",
-				TargetID:   id,
-				Detail:     detail,
+				ActorUserID: actorUserID,
+				ActorType:   actorType,
+				ActorLabel:  actorLabel,
+				Action:      "device." + strings.ToLower(action),
+				TargetType:  "device",
+				TargetID:    id,
+				SiteID:      &siteID,
+				RequestID:   requestIDFrom(r.Context()),
+				IP:          clientIP(r),
+				Detail:      detail,
 			})
 			if err == nil {
 				auditID = idVal

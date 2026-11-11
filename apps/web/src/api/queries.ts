@@ -8,14 +8,16 @@ import type {
   DeviceActionRequest,
   DeviceList,
   DeviceListQuery,
+  LoginRequest,
+  LoginResponse,
   NetworkList,
   NetworkListQuery,
   RFScanResponse,
   SiteList,
   SyncStatus,
+  User,
   WANHealthResponse,
 } from './types'
-
 // Polling is the phase-1 realtime mechanism (ADR-002 §4): the QueryClient
 // refetches on an interval while the tab is active. Server state lives in the
 // query cache, so no component keeps its own copy.
@@ -101,5 +103,38 @@ export function useSiteWANHealth(siteId: string | null) {
     queryKey: ['site-wan-health', siteId],
     queryFn: ({ signal }) => apiGet<WANHealthResponse>(`/sites/${siteId}/wan-health`, undefined, signal),
     enabled: Boolean(siteId),
+  })
+}
+
+export const currentUserQueryKey = ['auth-me'] as const
+
+export function useCurrentUser(enabled = true) {
+  return useQuery({
+    queryKey: currentUserQueryKey,
+    queryFn: ({ signal }) => apiGet<User>('/me', undefined, signal),
+    enabled,
+    retry: false,
+  })
+}
+
+export function useLogin() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (credentials: LoginRequest) =>
+      apiPost<LoginResponse, LoginRequest>('/auth/login', credentials),
+    onSuccess: (res) => {
+      queryClient.setQueryData(currentUserQueryKey, res.user)
+      void queryClient.invalidateQueries()
+    },
+  })
+}
+
+export function useLogout() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => apiPost<void>('/auth/logout'),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: currentUserQueryKey })
+    },
   })
 }

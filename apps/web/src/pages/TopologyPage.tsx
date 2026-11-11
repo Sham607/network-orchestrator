@@ -9,7 +9,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 
-import { useDevices, useSites } from '../api/queries'
+import { useDevices, useSites, useSiteWANHealth } from '../api/queries'
 import type { Device } from '../api/types'
 import { DeviceDrawer } from '../components/DeviceDrawer'
 
@@ -23,6 +23,8 @@ export default function TopologyPage() {
   // Default to first site if none selected
   const activeSiteId = selectedSiteId || (siteList.length > 0 ? siteList[0].id : '')
   const activeSite = siteList.find((s) => s.id === activeSiteId)
+  const wanHealth = useSiteWANHealth(activeSiteId || null)
+  const ispDisplay = wanHealth.data?.isp_name || wanHealth.data?.primary_wan || 'PT Telkom Indonesia'
 
   const devicesQuery = useDevices({ page: 1, page_size: 100, site_id: activeSiteId || undefined })
   const devices = devicesQuery.data?.data ?? []
@@ -78,7 +80,7 @@ export default function TopologyPage() {
         <div className="flex flex-col items-center">
           <div className="px-5 py-2.5 rounded-full border border-border bg-muted/50 text-xs font-semibold text-foreground flex items-center gap-2 shadow-sm">
             <Globe className="h-4 w-4 text-primary" />
-            <span>Internet WAN (Astinet / Telkom Corporate)</span>
+            <span>Internet WAN ({ispDisplay})</span>
           </div>
           <ArrowDown className="h-5 w-5 text-muted-foreground my-2 animate-bounce" />
         </div>

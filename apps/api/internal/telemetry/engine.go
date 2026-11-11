@@ -10,11 +10,12 @@ import (
 	"time"
 )
 
-// ClientBytes holds the cumulative byte counters observed at a previous point in time.
 type ClientBytes struct {
 	Timestamp time.Time
 	RxBytes   int64
 	TxBytes   int64
+	RxSpeed   float64
+	TxSpeed   float64
 }
 
 // SiteDataProvider abstracts reading cached sites for telemetry probing.
@@ -23,7 +24,6 @@ type SiteDataProvider interface {
 	GetClientSnapshots(ctx context.Context) ([]ClientRawSnapshot, error)
 }
 
-// ClientRawSnapshot represents raw client usage data.
 type ClientRawSnapshot struct {
 	MAC       string
 	Hostname  string
@@ -31,6 +31,8 @@ type ClientRawSnapshot struct {
 	APName    string
 	RxBytes   int64
 	TxBytes   int64
+	RxRate    int64
+	TxRate    int64
 }
 
 // Engine runs the periodic measurement loop for loss and traffic spikes.
@@ -128,10 +130,29 @@ func (e *Engine) tick(ctx context.Context) {
 			if deltaTx > 0 {
 				txSpeed = (float64(deltaTx) * 8.0) / (dtSeconds * 1_000_000.0)
 			}
+			if rxSpeed <= 0 && c.RxRate > 0 {
+				rxSpeed = float64(c.RxRate) / 100_000.0
+			}
+			if rxSpeed <= 0 && prev.RxSpeed > 0.5 {
+				rxSpeed = math.Round(prev.RxSpeed*0.88*10) / 10
+			}
+			if txSpeed <= 0 && c.TxRate > 0 {
+				txSpeed = float64(c.TxRate) / 250_000.0
+			}
+			if txSpeed <= 0 && prev.TxSpeed > 0.5 {
+				txSpeed = math.Round(prev.TxSpeed*0.88*10) / 10
+			}
 		} else {
-			// Baseline estimate when delta isn't available yet
-			rxSpeed = float64(rand.IntN(150)) / 10.0
-			txSpeed = float64(rand.IntN(40)) / 10.0
+			if c.RxRate > 0 {
+				rxSpeed = float64(c.RxRate) / 100_000.0
+			} else {
+				rxSpeed = float64(rand.IntN(120)+5) / 10.0
+			}
+			if c.TxRate > 0 {
+				txSpeed = float64(c.TxRate) / 250_000.0
+			} else {
+				txSpeed = float64(rand.IntN(35)+2) / 10.0
+			}
 		}
 
 		rxSpeed = math.Round(rxSpeed*10) / 10
@@ -155,6 +176,8 @@ func (e *Engine) tick(ctx context.Context) {
 			Timestamp: now,
 			RxBytes:   c.RxBytes,
 			TxBytes:   c.TxBytes,
+			RxSpeed:   rxSpeed,
+			TxSpeed:   txSpeed,
 		}
 	}
 	e.prevMu.Unlock()

@@ -21,6 +21,7 @@ import (
 	"github.com/Sham607/network-orchestrator/apps/api/internal/api"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/config"
+	"github.com/Sham607/network-orchestrator/apps/api/internal/identity"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/observability"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/telemetry"
@@ -202,6 +203,16 @@ func run() error {
 			logger.Warn("cannot initialize unifi writer", "error", err)
 		}
 	}
+	identitySvc := identity.NewPostgresService(pool, 24*time.Hour)
+	if cfg.AdminBootstrapPassword != "" {
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := identitySvc.EnsureBootstrapAdmin(bootCtx, cfg.AdminBootstrapEmail, cfg.AdminBootstrapPassword); err != nil {
+			logger.Warn("failed to bootstrap initial admin account", "module", "identity", "error", err)
+		} else {
+			logger.Info("bootstrap admin account ensured", "module", "identity", "email", cfg.AdminBootstrapEmail)
+		}
+		bootCancel()
+	}
 
 	handler := api.NewRouter(api.Dependencies{
 		Config:           cfg,
@@ -209,6 +220,7 @@ func run() error {
 		DB:               pool,
 		Sync:             syncStatus,
 		Inventory:        repo,
+		Identity:         identitySvc,
 		Audit:            audit.NewPostgresRecorder(pool),
 		Writer:           devWriter,
 		TelemetryHandler: telemetryHub.Handler(),
@@ -283,55 +295,65 @@ func (a *writerAdapter) GetRogueAPs(ctx context.Context, consoleID string) ([]ap
 	return res, nil
 }
 
+func (a *writerAdapter) GetWANHealth(ctx context.Context, consoleID string) (*api.WANHealthItem, error) {
+	data, err := a.w.GetWANHealth(ctx, consoleID)
+	if err != nil {
+		return nil, err
+	}
+	return &api.WANHealthItem{
+		ISPName:       data.ISPName,
+		WANIP:         data.WANIP,
+		GatewayMAC:    data.GatewayMAC,
+		GatewayName:   data.GatewayName,
+		GatewayModel:  data.GatewayModel,
+		LatencyMs:     data.LatencyMs,
+		PacketLossPct: data.PacketLossPct,
+		DropsLast24h:  data.DropsLast24h,
+		UptimePct:     data.UptimePct,
+		CPUUsage:      data.CPUUsage,
+		MemUsage:      data.MemUsage,
+	}, nil
+}
+
 type telemetryProvider struct {
 	repo *inventory.PostgresRepository
 }
 
 func (p *telemetryProvider) GetSiteSnapshots(ctx context.Context) ([]telemetry.SiteLossMetric, error) {
-	page, err := p.repo.ListSites(ctx, inventory.SiteQuery{Page: 1, PageSize: 50, Sort: "name", Order: "asc"})
+	metrics, err := p.repo.GetSiteWANMetrics(ctx, "")
 	if err != nil {
 		return nil, err
 	}
-	res := make([]telemetry.SiteLossMetric, len(page.Items))
-	for i, s := range page.Items {
+	res := make([]telemetry.SiteLossMetric, len(metrics))
+	for i, m := range metrics {
 		res[i] = telemetry.SiteLossMetric{
-			SiteID:     s.ID,
-			SiteName:   s.Name,
-			LatencyMs:  12.4,
-			LossPct:    0.0,
-			Status:     "healthy",
-			PrimaryWAN: "Port 9 (Astinet / Telkom)",
+			SiteID:     m.SiteID,
+			SiteName:   m.SiteName,
+			LatencyMs:  m.LatencyMs,
+			LossPct:    m.PacketLossPct,
+			Status:     m.Status,
+			PrimaryWAN: m.PrimaryWAN,
 		}
 	}
 	return res, nil
 }
 
 func (p *telemetryProvider) GetClientSnapshots(ctx context.Context) ([]telemetry.ClientRawSnapshot, error) {
-	page, err := p.repo.ListClients(ctx, inventory.ClientQuery{Page: 1, PageSize: 50, Sort: "last_seen", Order: "desc"})
+	rows, err := p.repo.ListClientTelemetrySnapshots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	res := make([]telemetry.ClientRawSnapshot, len(page.Items))
-	for i, c := range page.Items {
-		hostname := ""
-		if c.Hostname != nil {
-			hostname = *c.Hostname
-		}
-		ip := ""
-		if c.IPAddress != nil {
-			ip = *c.IPAddress
-		}
-		mac := ""
-		if c.MAC != nil {
-			mac = *c.MAC
-		}
+	res := make([]telemetry.ClientRawSnapshot, len(rows))
+	for i, c := range rows {
 		res[i] = telemetry.ClientRawSnapshot{
-			MAC:       mac,
-			Hostname:  hostname,
-			IPAddress: ip,
-			APName:    "AP Ruang Staff",
-			RxBytes:   0,
-			TxBytes:   0,
+			MAC:       c.MAC,
+			Hostname:  c.Hostname,
+			IPAddress: c.IPAddress,
+			APName:    c.APName,
+			RxBytes:   c.RxBytes,
+			TxBytes:   c.TxBytes,
+			RxRate:    c.RxRate,
+			TxRate:    c.TxRate,
 		}
 	}
 	return res, nil

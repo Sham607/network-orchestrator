@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Play, Sliders, CheckCircle2, AlertTriangle, Loader2 } from 'lucide-react'
 import type { Device } from '../api/types'
 import { useDeviceAction } from '../api/queries'
-
+import { useAuth } from './AuthGate'
 interface BatchOptimizerModalProps {
   devices: Device[]
   isOpen: boolean
@@ -10,6 +10,7 @@ interface BatchOptimizerModalProps {
 }
 
 export function BatchOptimizerModal({ devices, isOpen, onClose }: BatchOptimizerModalProps) {
+  const { canOperate } = useAuth()
   const aps = devices.filter((d) => d.device_type === 'ap')
   const [isRunning, setIsRunning] = useState(false)
   const [currentIndex, setCurrentIndex] = useState(0)
@@ -169,14 +170,20 @@ export function BatchOptimizerModal({ devices, isOpen, onClose }: BatchOptimizer
               Close
             </button>
             {!isRunning && !isCompleted && (
-              <button
-                type="button"
-                onClick={startOptimization}
-                className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
-              >
-                <Play className="h-3.5 w-3.5" />
-                <span>Start Safe Multi-AP Optimization</span>
-              </button>
+              canOperate ? (
+                <button
+                  type="button"
+                  onClick={startOptimization}
+                  className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity"
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  <span>Start Safe Multi-AP Optimization</span>
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 px-3 py-2 text-xs text-muted-foreground border border-dashed border-border rounded-lg">
+                  🔒 Operator or admin role required
+                </span>
+              )
             )}
             {isRunning && (
               <button

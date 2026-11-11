@@ -16,10 +16,12 @@ export type ClientList = components['schemas']['ClientList']
 export type Network = components['schemas']['Network']
 export type NetworkList = components['schemas']['NetworkList']
 export type SyncStatus = components['schemas']['SyncStatus']
+export type User = components['schemas']['User']
+export type LoginRequest = components['schemas']['LoginRequest']
+export type LoginResponse = components['schemas']['LoginResponse']
 
 export type DeviceActionRequest = components['schemas']['DeviceActionRequest']
 export type ActionAccepted = components['schemas']['ActionAccepted']
-/** The single error body shape every endpoint returns: `{ code, message, details }`. */
 export type ErrorBody = components['schemas']['Error']
 /** Stable, machine-readable codes from the contract's `Error` enum. */
 export type ErrorCode = ErrorBody['code']
@@ -68,4 +70,8 @@ export interface WANHealthResponse {
   packet_loss_pct: number
   drops_last_24h: number
   uptime_pct: number
+  isp_name?: string
+  wan_ip?: string
+  cpu_usage?: string
+  mem_usage?: string
 }

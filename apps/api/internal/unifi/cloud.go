@@ -3,8 +3,11 @@ package unifi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -14,8 +17,10 @@ import (
 // networks — those only exist on the per-console Integration API
 // (docs/adr/001-unifi-api-surface.md).
 type cloudClient struct {
-	t       *transport
-	baseURL string
+	t            *transport
+	baseURL      string
+	mu           sync.RWMutex
+	siteConsoles map[string]string
 }
 
 type cloudEnvelope[T any] struct {
@@ -87,6 +92,12 @@ func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 			return nil, drift("site manager site entry is missing siteId")
 		}
 
+		c.mu.Lock()
+		if c.siteConsoles == nil {
+			c.siteConsoles = make(map[string]string)
+		}
+		c.siteConsoles[s.SiteID] = s.HostID
+		c.mu.Unlock()
 		siteObj := Site{
 			ID:         s.SiteID,
 			Name:       s.Meta.Name,
@@ -166,14 +177,278 @@ func (c *cloudClient) ListDevices(ctx context.Context, siteID string) ([]Device,
 
 // ListClients is not available on the Site Manager cloud API (ADR-001: the
 // cloud clients path is 404); clients are read per console.
-func (c *cloudClient) ListClients(context.Context, string) ([]ClientInfo, error) {
-	return nil, &Error{Kind: ErrNotFound, Message: "clients are not available on the Site Manager cloud API; use the console transport"}
+func (c *cloudClient) ListClients(ctx context.Context, siteID string) ([]ClientInfo, error) {
+	c.mu.RLock()
+	consoleID := c.siteConsoles[siteID]
+	c.mu.RUnlock()
+
+	if consoleID == "" || c.t == nil || c.t.apiKey == "" {
+		return nil, &Error{Kind: ErrNotFound, Message: "clients are not available on the Site Manager cloud API; use the console transport"}
+	}
+
+	rawURL := fmt.Sprintf("%s/v1/connector/consoles/%s/proxy/network/api/s/default/stat/sta", c.baseURL, url.PathEscape(consoleID))
+	var res struct {
+		Meta struct {
+			RC string `json:"rc"`
+		} `json:"meta"`
+		Data []struct {
+			ID              string `json:"_id"`
+			UserID          string `json:"user_id"`
+			MAC             string `json:"mac"`
+			Hostname        string `json:"hostname"`
+			Name            string `json:"name"`
+			IP              string `json:"ip"`
+			LastIP          string `json:"last_ip"`
+			IsWired         bool   `json:"is_wired"`
+			IsGuest         bool   `json:"is_guest"`
+			LastUplinkMAC   string `json:"last_uplink_mac"`
+			LastUplinkName  string `json:"last_uplink_name"`
+			APMAC           string `json:"ap_mac"`
+			ESSID           string `json:"essid"`
+			Signal          int    `json:"signal"`
+			Noise           int    `json:"noise"`
+			RxBytes         int64  `json:"rx_bytes"`
+			TxBytes         int64  `json:"tx_bytes"`
+			RxRate          int64  `json:"rx_rate"`
+			TxRate          int64  `json:"tx_rate"`
+			Uptime          int64  `json:"uptime"`
+			AssocTime       int64  `json:"assoc_time"`
+			LatestAssocTime int64  `json:"latest_assoc_time"`
+		} `json:"data"`
+	}
+
+	if err := c.t.getJSON(ctx, rawURL, &res); err != nil {
+		return nil, &Error{Kind: ErrNotFound, Message: "clients unavailable via connector proxy: " + err.Error(), Cause: err}
+	}
+
+	out := make([]ClientInfo, 0, len(res.Data))
+	for _, s := range res.Data {
+		clientID := s.UserID
+		if clientID == "" {
+			clientID = s.ID
+		}
+		if clientID == "" {
+			clientID = normalizeMAC(s.MAC)
+		}
+		hostname := s.Hostname
+		if hostname == "" {
+			hostname = s.Name
+		}
+		ip := s.LastIP
+		if ip == "" {
+			ip = s.IP
+		}
+		cType := "WIRELESS"
+		if s.IsWired {
+			cType = "WIRED"
+		}
+		accessType := "DEFAULT"
+		if s.IsGuest {
+			accessType = "GUEST"
+		}
+		uplink := s.LastUplinkMAC
+		if uplink == "" {
+			uplink = s.APMAC
+		}
+		var connTime time.Time
+		if s.LatestAssocTime > 0 {
+			connTime = time.Unix(s.LatestAssocTime, 0).UTC()
+		} else if s.AssocTime > 0 {
+			connTime = time.Unix(s.AssocTime, 0).UTC()
+		}
+
+		out = append(out, ClientInfo{
+			ID:          clientID,
+			SiteID:      siteID,
+			MAC:         normalizeMAC(s.MAC),
+			Hostname:    hostname,
+			IP:          ip,
+			Type:        cType,
+			AccessType:  accessType,
+			APID:        uplink,
+			SSID:        s.ESSID,
+			SignalDBm:   s.Signal,
+			ConnectedAt: connTime,
+			Connected:   true,
+			Raw:         mustRaw(s),
+		})
+	}
+
+	return out, nil
 }
 
-// ListNetworks is not available on the Site Manager cloud API; networks are
-// read per console.
-func (c *cloudClient) ListNetworks(context.Context, string) ([]Network, error) {
-	return nil, &Error{Kind: ErrNotFound, Message: "networks are not available on the Site Manager cloud API; use the console transport"}
+func (c *cloudClient) ListNetworks(ctx context.Context, siteID string) ([]Network, error) {
+	c.mu.RLock()
+	consoleID := c.siteConsoles[siteID]
+	c.mu.RUnlock()
+
+	if consoleID == "" || c.t == nil || c.t.apiKey == "" {
+		return nil, &Error{Kind: ErrNotFound, Message: "networks are not available on the Site Manager cloud API; use the console transport"}
+	}
+
+	rawURL := fmt.Sprintf("%s/v1/connector/consoles/%s/proxy/network/api/s/default/rest/networkconf", c.baseURL, url.PathEscape(consoleID))
+	var res struct {
+		Meta struct {
+			RC string `json:"rc"`
+		} `json:"meta"`
+		Data []struct {
+			ID        string `json:"_id"`
+			Name      string `json:"name"`
+			VLAN      *int   `json:"vlan"`
+			Purpose   string `json:"purpose"`
+			Enabled   *bool  `json:"enabled"`
+			IsDefault bool   `json:"is_default"`
+		} `json:"data"`
+	}
+
+	if err := c.t.getJSON(ctx, rawURL, &res); err != nil {
+		return nil, &Error{Kind: ErrNotFound, Message: "networks unavailable via connector proxy: " + err.Error(), Cause: err}
+	}
+
+	out := make([]Network, 0, len(res.Data))
+	for _, n := range res.Data {
+		mgmt := "GATEWAY"
+		if n.Purpose == "wan" {
+			mgmt = "WAN"
+		}
+		vlan := 1
+		if n.VLAN != nil {
+			vlan = *n.VLAN
+		}
+		enabled := true
+		if n.Enabled != nil {
+			enabled = *n.Enabled
+		}
+		isDef := n.IsDefault || strings.EqualFold(n.Name, "default")
+		out = append(out, Network{
+			ID:         n.ID,
+			SiteID:     siteID,
+			Name:       n.Name,
+			VLAN:       vlan,
+			Management: mgmt,
+			Enabled:    enabled,
+			IsDefault:  isDef,
+			Origin:     "USER_DEFINED",
+			Raw:        mustRaw(n),
+		})
+	}
+
+	return out, nil
+}
+
+func (c *cloudClient) GetSiteWANStats(ctx context.Context, siteID string) ([]byte, error) {
+	c.mu.RLock()
+	consoleID := c.siteConsoles[siteID]
+	c.mu.RUnlock()
+
+	if consoleID == "" || c.t == nil || c.t.apiKey == "" {
+		return nil, errors.New("unifi: no console for site")
+	}
+
+	rawURL := fmt.Sprintf("%s/v1/connector/consoles/%s/proxy/network/api/s/default/stat/health", c.baseURL, url.PathEscape(consoleID))
+	var res struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := c.t.getJSON(ctx, rawURL, &res); err != nil {
+		return nil, err
+	}
+
+	var (
+		ispName  string
+		ispOrg   string
+		wanIP    string
+		latency  float64 = 15.0
+		lossPct  float64 = 0.0
+		uptime   float64 = 100.0
+		drops    int     = 0
+		cpuUsage string
+		memUsage string
+	)
+
+	for _, item := range res.Data {
+		var sub struct {
+			Subsystem string `json:"subsystem"`
+		}
+		_ = json.Unmarshal(item, &sub)
+		if sub.Subsystem == "wan" {
+			var wan struct {
+				WANIP           string `json:"wan_ip"`
+				ISPName         string `json:"isp_name"`
+				ISPOrganization string `json:"isp_organization"`
+				GWSystemStats   struct {
+					CPU string `json:"cpu"`
+					Mem string `json:"mem"`
+				} `json:"gw_system-stats"`
+				UptimeStats struct {
+					WAN struct {
+						Availability   *float64 `json:"availability"`
+						LatencyAverage *float64 `json:"latency_average"`
+					} `json:"WAN"`
+				} `json:"uptime_stats"`
+			}
+			if err := json.Unmarshal(item, &wan); err == nil {
+				wanIP = wan.WANIP
+				ispName = wan.ISPName
+				ispOrg = wan.ISPOrganization
+				cpuUsage = wan.GWSystemStats.CPU
+				memUsage = wan.GWSystemStats.Mem
+				if wan.UptimeStats.WAN.Availability != nil && *wan.UptimeStats.WAN.Availability >= 0 {
+					uptime = *wan.UptimeStats.WAN.Availability
+					lossPct = 100.0 - *wan.UptimeStats.WAN.Availability
+				}
+				if wan.UptimeStats.WAN.LatencyAverage != nil && *wan.UptimeStats.WAN.LatencyAverage > 0 {
+					latency = *wan.UptimeStats.WAN.LatencyAverage
+				}
+			}
+		} else if sub.Subsystem == "www" {
+			var www struct {
+				Latency *float64 `json:"latency"`
+				Drops   *int     `json:"drops"`
+			}
+			if err := json.Unmarshal(item, &www); err == nil {
+				if www.Drops != nil {
+					drops = *www.Drops
+				}
+				if latency <= 0 && www.Latency != nil && *www.Latency > 0 {
+					latency = *www.Latency
+				}
+			}
+		}
+	}
+
+	finalISP := strings.TrimSpace(ispName)
+	if finalISP == "" {
+		finalISP = strings.TrimSpace(ispOrg)
+	}
+
+	payload := map[string]any{
+		"ispInfo": map[string]any{
+			"name":         finalISP,
+			"organization": ispOrg,
+		},
+		"statistics": map[string]any{
+			"ispInfo": map[string]any{
+				"name":         finalISP,
+				"organization": ispOrg,
+			},
+			"wan": map[string]any{
+				"latencyMs":     latency,
+				"packetLossPct": lossPct,
+				"uptimePct":     uptime,
+			},
+		},
+		"wanHealth": map[string]any{
+			"latency":   latency,
+			"drops":     drops,
+			"isp_name":  finalISP,
+			"wan_ip":    wanIP,
+			"uptime":    uptime,
+			"cpu_usage": cpuUsage,
+			"mem_usage": memUsage,
+		},
+	}
+
+	return json.Marshal(payload)
 }
 
 func cloudDevice(siteID string, d cloudDeviceEntry) Device {

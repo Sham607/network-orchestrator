@@ -24,6 +24,10 @@ Implemented in code:
   `client_events` connect/disconnect transition diffing, scheduled 30-day
   `client_events` retention pruner (`internal/inventory`), and append-only
   `audit_log` recorder (`internal/audit`).
+- Operator authentication, Argon2id password verification, server-side
+  `HttpOnly` session cookies, CSRF double-submit verification, and 3-tier RBAC
+  (`viewer`, `operator`, `admin`) in `internal/identity` (`POST /auth/login`,
+  `POST /auth/logout`, `GET /me`, gated via `AUTH_ENABLED=true`).
 - Probe endpoints (`health`, `ready`, `sync/status`), cache-backed list and
   detail endpoints (`sites`, `sites/{id}`, `devices`, `devices/{id}`,
   `clients`, `clients/{id}`, `networks`, `networks/{id}`), site RF/WAN
@@ -34,22 +38,21 @@ Implemented in code:
 
 Three consequences worth knowing before you point anything at this build:
 
-- **All endpoints are currently unauthenticated** until operator auth
-  (`internal/identity`) lands. That includes AP maintenance actions if you set
-  `WRITE_ENABLED=true`. Keep the API strictly on the office LAN or VPN; never
-  expose it to the internet.
+- **Operator authentication is opt-in via `AUTH_ENABLED=true`.** By default
+  (`AUTH_ENABLED=false`) local development and CI run unauthenticated; set
+  `AUTH_ENABLED=true` along with `ADMIN_BOOTSTRAP_EMAIL` and
+  `ADMIN_BOOTSTRAP_PASSWORD` in production so all dashboard reads and AP
+  maintenance actions require a valid operator session and RBAC role.
 - **Clients and VLAN networks only populate in console mode.** The Site Manager
   cloud surface (`UNIFI_MODE=cloud`, default) serves only `sites` and `devices`
   (ADR-001), so `GET /api/v1/clients` and `GET /api/v1/networks` return valid
   empty pages in `cloud` mode. Populate real client and network rows with
   `UNIFI_MODE=local`.
-- **Live telemetry and WAN health endpoints currently serve synthetic baseline
-  metrics.** Inventory (`sites`, `devices`, `clients`, `networks`,
-  `client_events`) and RF rogue-AP scans (`sites/{id}/rf-scan`) read from cached
-  or controller data, whereas `ws/telemetry` and `sites/{id}/wan-health`
-  currently attach placeholder latency/loss/byte counters on top of cached
-  site/client records (`apps/api/cmd/api/main.go`, `internal/api/sites.go`).
-
+- **WAN health and telemetry derive from cached gateway/device state and raw
+  counters.** `sites/{id}/wan-health` and `ws/telemetry` resolve gateway identity,
+  online device ratios, 24h disconnect drops, and client uplink AP names from
+  PostgreSQL cache (`internal/inventory/read.go`), falling back to baseline
+  estimates only when the UniFi surface omits byte or latency telemetry.
 ---
 
 ## Prerequisites

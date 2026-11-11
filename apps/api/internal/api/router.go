@@ -14,6 +14,7 @@ import (
 
 	"github.com/Sham607/network-orchestrator/apps/api/internal/audit"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/config"
+	"github.com/Sham607/network-orchestrator/apps/api/internal/identity"
 	"github.com/Sham607/network-orchestrator/apps/api/internal/inventory"
 )
 
@@ -44,12 +45,26 @@ type RogueAPItem struct {
 	RSSI    int    `json:"rssi"`
 	Signal  int    `json:"signal"`
 }
+type WANHealthItem struct {
+	ISPName       string  `json:"isp_name"`
+	WANIP         string  `json:"wan_ip"`
+	GatewayMAC    string  `json:"gw_mac"`
+	GatewayName   string  `json:"gw_name"`
+	GatewayModel  string  `json:"gw_model"`
+	LatencyMs     float64 `json:"latency_ms"`
+	PacketLossPct float64 `json:"packet_loss_pct"`
+	DropsLast24h  int     `json:"drops_last_24h"`
+	UptimePct     float64 `json:"uptime_pct"`
+	CPUUsage      string  `json:"cpu_usage"`
+	MemUsage      string  `json:"mem_usage"`
+}
 
 // DeviceWriter defines the operational actions the router dispatches.
 type DeviceWriter interface {
 	RestartDevice(ctx context.Context, consoleID, mac string) error
 	TuneRadio(ctx context.Context, consoleID, apID, band string, channel, width int) error
 	GetRogueAPs(ctx context.Context, consoleID string) ([]RogueAPItem, error)
+	GetWANHealth(ctx context.Context, consoleID string) (*WANHealthItem, error)
 }
 
 // Dependencies are the collaborators a router needs.
@@ -62,6 +77,7 @@ type Dependencies struct {
 	Sync SyncStatusSource
 	// Inventory serves the list endpoints from the cache. It is required.
 	Inventory        Inventory
+	Identity         identity.Service
 	Audit            audit.Recorder
 	Writer           DeviceWriter
 	TelemetryHandler http.HandlerFunc
@@ -74,8 +90,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Use(sessionMiddleware(deps))
 		r.Get("/health", handleHealth)
 		r.Get("/ready", handleReady(deps))
+		r.Post("/auth/login", handleLogin(deps))
+		r.Post("/auth/logout", handleLogout(deps))
+		r.Get("/me", handleMe(deps))
 		r.Get("/sync/status", handleSyncStatus(deps))
 		r.Get("/sites", handleListSites(deps))
 		r.Get("/sites/{id}", handleGetSite(deps))

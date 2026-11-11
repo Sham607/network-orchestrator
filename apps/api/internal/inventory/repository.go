@@ -54,10 +54,10 @@ RETURNING id::text`
 const upsertDevice = `
 INSERT INTO devices (
     site_id, unifi_device_id, mac, name, model, device_type, status,
-    firmware_version, ip_address, adopted_at, uptime_sec, source, raw, synced_at
+    firmware_version, ip_address, adopted_at, uptime_sec, radios, source, raw, synced_at
 ) VALUES (
     $1, $2, NULLIF($3, ''), NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), NULLIF($7, ''),
-    NULLIF($8, ''), NULLIF($9::text, '')::inet, $10, $11, $12, $13, $14
+    NULLIF($8, ''), NULLIF($9::text, '')::inet, $10, $11, $12, $13, $14, $15
 )
 ON CONFLICT (site_id, unifi_device_id) DO UPDATE SET
     mac              = EXCLUDED.mac,
@@ -69,6 +69,7 @@ ON CONFLICT (site_id, unifi_device_id) DO UPDATE SET
     ip_address       = EXCLUDED.ip_address,
     adopted_at       = EXCLUDED.adopted_at,
     uptime_sec       = EXCLUDED.uptime_sec,
+    radios           = CASE WHEN EXCLUDED.radios = '[]'::jsonb THEN devices.radios ELSE EXCLUDED.radios END,
     source           = EXCLUDED.source,
     raw              = EXCLUDED.raw,
     synced_at        = EXCLUDED.synced_at`
@@ -206,7 +207,7 @@ func (r *PostgresRepository) ApplySite(ctx context.Context, snap SiteSnapshot) e
 		if _, err := tx.Exec(ctx, upsertDevice,
 			siteID, d.ID, d.MAC, d.Name, d.Model, d.Type, d.Status,
 			d.Firmware, optionalText(d.IP), optionalTime(d.AdoptedAt), optionalUptime(d.UptimeSec),
-			snap.Source, jsonPayload(d.Raw), snap.SyncedAt,
+			extractNormalizedRadios(d.Raw), snap.Source, jsonPayload(d.Raw), snap.SyncedAt,
 		); err != nil {
 			return fmt.Errorf("inventory: upsert device %s: %w", d.ID, err)
 		}
@@ -429,4 +430,18 @@ func optionalVLAN(v int) any {
 		return nil
 	}
 	return int32(v)
+}
+
+// extractNormalizedRadios extracts normalized Radio summaries from a raw device
+// JSON payload when present, returning "[]" otherwise.
+func extractNormalizedRadios(raw json.RawMessage) []byte {
+	radios := parseRadiosFromJSON(nil, raw)
+	if len(radios) == 0 {
+		return []byte("[]")
+	}
+	b, err := json.Marshal(radios)
+	if err != nil {
+		return []byte("[]")
+	}
+	return b
 }

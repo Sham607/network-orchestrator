@@ -76,8 +76,8 @@ export function WANHealthModal({ siteId, siteName, isOpen, onClose }: WANHealthM
                     </p>
                   </div>
                 </div>
-                <span className="px-2.5 py-1 rounded-full bg-emerald-500 text-white text-xs font-bold uppercase">
-                  100% Up
+                <span className={`px-2.5 py-1 rounded-full text-white text-xs font-bold uppercase ${data.status === 'healthy' ? 'bg-emerald-500' : data.status === 'degraded' ? 'bg-red-500' : 'bg-amber-500'}`}>
+                  {data.uptime_pct}% Up
                 </span>
               </div>
 
@@ -100,16 +100,18 @@ export function WANHealthModal({ siteId, siteName, isOpen, onClose }: WANHealthM
                 </div>
               </div>
 
-              {/* Flapping Diagnostics Note */}
-              <div className="rounded-lg border border-border bg-card p-3.5 text-xs space-y-1.5">
+              {/* Gateway Diagnostics */}
+              <div className="rounded-lg border border-border bg-card p-3.5 text-xs space-y-2">
                 <div className="font-semibold text-foreground flex items-center gap-1.5">
                   <Activity className="h-4 w-4 text-primary" />
-                  Optical Dropcore &amp; Flapping Diagnostics
+                  Live Gateway &amp; Uplink Diagnostics
                 </div>
-                <p className="text-muted-foreground leading-relaxed">
-                  UDM Pro Port 9 SFP/RJ-45 negotiation is active at 1000 Mbps Full Duplex with 0 CRC/RX errors.
-                  No sub-minute optical signal renegotiation detected in the current observation window.
-                </p>
+                <div className="grid grid-cols-2 gap-2 text-muted-foreground pt-1 font-mono text-[11px]">
+                  <div>Public WAN IP: <strong className="text-foreground font-sans">{data.wan_ip || 'Auto-Assigned'}</strong></div>
+                  <div>ISP Carrier: <strong className="text-foreground font-sans">{data.isp_name || data.primary_wan}</strong></div>
+                  <div>System Load: <strong className="text-foreground font-sans">{data.cpu_usage ? `CPU ${data.cpu_usage}% · Mem ${data.mem_usage}%` : 'Normal (UDM-Pro)'}</strong></div>
+                  <div>Link Drops: <strong className="text-foreground font-sans">{data.drops_last_24h} event(s) in 24h</strong></div>
+                </div>
               </div>
 
               {/* Gateway details */}

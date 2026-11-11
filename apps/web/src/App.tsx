@@ -13,9 +13,12 @@ import {
   ExternalLink,
   GitFork,
   AlertTriangle,
+  LogOut,
+  UserCheck,
 } from 'lucide-react'
 
 import { useSyncStatus } from './api/queries'
+import { useAuth } from './components/AuthGate'
 import { useTelemetryWebSocket } from './hooks/useTelemetryWebSocket'
 import { LiveTicker } from './components/LiveTicker'
 import ClientsPage from './pages/ClientsPage'
@@ -43,6 +46,7 @@ export default function App() {
     }
   }, [darkMode])
 
+  const { user, openLoginModal, logout } = useAuth()
   const syncStatus = useSyncStatus()
   const { isConnected, payload, latencyHistory, lossHistory, activeAlert, clearAlert } =
     useTelemetryWebSocket()
@@ -193,6 +197,36 @@ export default function App() {
                   {syncStatus.data?.stale ? 'Stale' : 'Synchronized'}
                 </span>
               </p>
+            </div>
+          </div>
+
+          {/* Operator Identity & RBAC Session Box */}
+          <div className="rounded-lg border border-border bg-muted/40 p-3 text-xs space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 font-semibold text-foreground truncate">
+                <UserCheck className="h-3.5 w-3.5 text-primary shrink-0" />
+                <span className="truncate">{user?.email ?? 'operator@local.noc'}</span>
+              </span>
+              <span className="text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-primary/15 text-primary shrink-0">
+                {user?.role ?? 'admin'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 pt-0.5">
+              <button
+                type="button"
+                onClick={openLoginModal}
+                className="flex-1 rounded border border-border bg-background py-1 px-2 text-[11px] font-medium text-foreground hover:bg-muted transition-colors"
+              >
+                Switch Operator
+              </button>
+              <button
+                type="button"
+                onClick={() => void logout()}
+                title="Sign out operator session"
+                className="inline-flex items-center justify-center rounded border border-border bg-background p-1 text-muted-foreground hover:text-rose-500 hover:bg-muted transition-colors"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+              </button>
             </div>
           </div>
 

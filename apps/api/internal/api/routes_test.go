@@ -25,7 +25,11 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 	got := map[string]bool{}
 	err := chi.Walk(walkable, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		got[method+" "+route] = true
-		if method != http.MethodGet && !(method == http.MethodPost && (route == "/api/v1/devices/{id}/actions" || route == "/api/v1/clients/{id}/actions")) {
+		allowedPost := method == http.MethodPost && (route == "/api/v1/devices/{id}/actions" ||
+			route == "/api/v1/clients/{id}/actions" ||
+			route == "/api/v1/auth/login" ||
+			route == "/api/v1/auth/logout")
+		if method != http.MethodGet && !allowedPost {
 			t.Errorf("unauthorized non-GET route registered: %s %s", method, route)
 		}
 		return nil
@@ -40,6 +44,7 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 		"GET /api/v1/devices",
 		"GET /api/v1/devices/{id}",
 		"GET /api/v1/health",
+		"GET /api/v1/me",
 		"GET /api/v1/networks",
 		"GET /api/v1/networks/{id}",
 		"GET /api/v1/ready",
@@ -49,6 +54,8 @@ func TestRouterRegistersOnlyReadRoutes(t *testing.T) {
 		"GET /api/v1/sites/{id}/wan-health",
 		"GET /api/v1/sync/status",
 		"GET /api/v1/ws/telemetry",
+		"POST /api/v1/auth/login",
+		"POST /api/v1/auth/logout",
 		"POST /api/v1/clients/{id}/actions",
 		"POST /api/v1/devices/{id}/actions",
 	}

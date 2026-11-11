@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -265,7 +266,6 @@ func (w *Worker) collect(ctx context.Context, site unifi.Site, at time.Time) (Si
 	} else {
 		w.cfg.Logger.Warn("sync: clients unavailable", "site_id", site.ID, "error", err)
 	}
-
 	if networks, err := w.cfg.Client.ListNetworks(ctx, site.ID); err == nil {
 		snap.Networks = networks
 	} else if isUnsupported(err) {
@@ -273,7 +273,37 @@ func (w *Worker) collect(ctx context.Context, site unifi.Site, at time.Time) (Si
 	} else {
 		w.cfg.Logger.Warn("sync: networks unavailable", "site_id", site.ID, "error", err)
 	}
+
+	if wanSource, ok := w.cfg.Client.(interface {
+		GetSiteWANStats(ctx context.Context, siteID string) ([]byte, error)
+	}); ok {
+		if rawStats, err := wanSource.GetSiteWANStats(ctx, site.ID); err == nil && len(rawStats) > 0 {
+			snap.Site.Raw = mergeSiteRaw(snap.Site.Raw, rawStats)
+		}
+	}
+
 	return snap, nil
+}
+
+func mergeSiteRaw(orig, stats []byte) json.RawMessage {
+	var m map[string]any
+	if len(orig) > 0 {
+		_ = json.Unmarshal(orig, &m)
+	}
+	if m == nil {
+		m = make(map[string]any)
+	}
+	var s map[string]any
+	if err := json.Unmarshal(stats, &s); err == nil {
+		for k, v := range s {
+			m[k] = v
+		}
+	}
+	res, err := json.Marshal(m)
+	if err != nil {
+		return orig
+	}
+	return res
 }
 
 // finish stamps, persists and publishes a completed cycle.
