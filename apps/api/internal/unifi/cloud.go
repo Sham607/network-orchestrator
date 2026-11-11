@@ -98,12 +98,17 @@ func (c *cloudClient) ListSites(ctx context.Context) ([]Site, error) {
 		}
 		c.siteConsoles[s.SiteID] = s.HostID
 		c.mu.Unlock()
+		tz := strings.TrimSpace(s.Meta.Timezone)
+		if tz == "" || tz == "UTC" || tz == "Etc/UTC" {
+			tz = "Asia/Jakarta"
+		}
+
 		siteObj := Site{
 			ID:         s.SiteID,
 			Name:       s.Meta.Name,
 			Desc:       s.Meta.Desc,
 			ConsoleID:  s.HostID,
-			Timezone:   s.Meta.Timezone,
+			Timezone:   tz,
 			GatewayMAC: normalizeMAC(s.Meta.GatewayMAC),
 			Raw:        mustRaw(s),
 		}

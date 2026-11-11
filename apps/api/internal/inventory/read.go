@@ -205,7 +205,7 @@ const listSitesSQL = `
 SELECT s.id::text,
        COALESCE(NULLIF(NULLIF(s.name, 'default'), 'Default'), gw.name, NULLIF(s.description, 'Default'), s.name),
        COALESCE(gw.name, s.description, 'Office Gateway Console'),
-       COALESCE(s.timezone, 'Asia/Jakarta'),
+       COALESCE(NULLIF(s.timezone, 'UTC'), 'Asia/Jakarta'),
        COALESCE(s.gateway_mac, gw.mac, ''),
        s.synced_at
 FROM sites s
@@ -350,7 +350,7 @@ const getSiteSQL = `
 SELECT s.id::text,
        COALESCE(NULLIF(NULLIF(s.name, 'default'), 'Default'), gw.name, NULLIF(s.description, 'Default'), s.name),
        COALESCE(gw.name, s.description, 'Office Gateway Console'),
-       COALESCE(s.timezone, 'Asia/Jakarta'),
+       COALESCE(NULLIF(s.timezone, 'UTC'), 'Asia/Jakarta'),
        COALESCE(s.gateway_mac, gw.mac, ''),
        COALESCE(s.console_id, ''),
        s.synced_at
